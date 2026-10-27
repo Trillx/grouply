@@ -1,0 +1,119 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push supersedes an unfinished build, so releases only move forward.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # the build number is the commit count
+
+      # Only builds of main are numbered; anything else is a development build that never
+      # self-updates.
+      - name: Stamp build number
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          {
+            echo "GROUPLY_BUILD=$(git rev-list --count HEAD)"
+            echo "GROUPLY_COMMIT=$GITHUB_SHA"
+            echo "GROUPLY_REPO=$GITHUB_REPOSITORY"
+          } >> "$GITHUB_ENV"
+
+      - name: Set up Rust
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustup target add aarch64-pc-windows-msvc
+          rustup component add clippy rustfmt
+
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --target aarch64-pc-windows-msvc -- -D warnings
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - run: cargo build --release --target aarch64-pc-windows-msvc
+      - run: cargo build --release --target x86_64-pc-windows-msvc
+
+      - name: Collect executables
+        shell: bash
+        run: |
+          mkdir dist
+          cp target/aarch64-pc-windows-msvc/release/grouply.exe dist/grouply-arm64.exe
+          cp target/x86_64-pc-windows-msvc/release/grouply.exe dist/grouply-x64.exe
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: grouply
+          path: dist/
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: grouply
+          path: dist
+
+      # The app reads releases/latest/download/manifest.txt to find the newest build.
+      - name: Publish release
+        run: |
+          build=$(git rev-list --count HEAD)
+          tag="build-$build"
+          if gh release view "$tag" > /dev/null 2>&1; then
+            echo "$tag is already published"
+            exit 0
+          fi
+          base="https://github.com/$GH_REPO/releases/download/$tag"
+          {
+            echo "build=$build"
+            echo "commit=$GITHUB_SHA"
+            for arch in arm64 x64; do
+              echo "$arch.url=$base/grouply-$arch.exe"
+              echo "$arch.sha256=$(sha256sum "dist/grouply-$arch.exe" | cut -d' ' -f1)"
+            done
+          } > dist/manifest.txt
+          {
+            echo "Automatic build of \`${GITHUB_SHA::7}\`: $(git log -1 --format=%s)"
+            echo
+            echo "- **grouply-arm64.exe**: Windows on ARM"
+            echo "- **grouply-x64.exe**: Intel and AMD PCs"
+            echo
+            echo "Grouply checks for new builds itself; use the tray icon to update."
+          } > notes.md
+          gh release create "$tag" dist/* --target "$GITHUB_SHA" --title "Build $build" \
+            --notes-file notes.md --latest
+
+      - name: Keep the 20 newest builds
+        run: |
+          gh release list --limit 200 --json tagName --jq '.[].tagName | select(startswith("build-"))' \
+            | tail -n +21 \
+            | xargs -r -n1 gh release delete --cleanup-tag --yes
