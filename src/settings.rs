@@ -316,13 +316,20 @@ mod tests {
         assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
     }
 
+    /// A fresh, legal-on-Windows directory name for the two filesystem tests.
+    fn temp_dir(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos());
+        std::env::temp_dir().join(format!(
+            "grouply-settings-{tag}-{}-{nanos}",
+            std::process::id()
+        ))
+    }
+
     #[test]
     fn save_and_load_use_the_same_format() {
-        let dir = std::env::temp_dir().join(format!(
-            "grouply-settings-{}-{:?}",
-            std::process::id(),
-            std::time::SystemTime::now()
-        ));
+        let dir = temp_dir("round-trip");
         let path = dir.join("settings.toml");
         custom().save(&path).expect("write settings");
         let loaded = load(&path);
@@ -333,11 +340,7 @@ mod tests {
 
     #[test]
     fn a_missing_file_is_created_with_the_defaults() {
-        let dir = std::env::temp_dir().join(format!(
-            "grouply-settings-new-{}-{:?}",
-            std::process::id(),
-            std::time::SystemTime::now()
-        ));
+        let dir = temp_dir("create");
         let path = dir.join("nested").join("settings.toml");
         let loaded = load_or_create(&path);
         assert_eq!(loaded.settings, Settings::default());
