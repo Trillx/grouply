@@ -15,7 +15,7 @@ use super::hooks::WinEvent;
 use super::tabbar::{TabBar, TabView, ZOrder};
 use super::win::{self, Win};
 use crate::command::TabCommand;
-use crate::drag::DropTracker;
+use crate::drag::{DropTracker, SizeWatch};
 use crate::handoff::SavedGroup;
 use crate::layout::{self, Rect};
 use crate::model::{GroupId, Groups, Removed};
@@ -26,7 +26,7 @@ const DRAG_POLL_MS: u32 = 50;
 
 struct Drag {
     window: Win,
-    start: Option<Rect>,
+    size: SizeWatch,
     tracker: DropTracker<Win>,
 }
 
@@ -43,6 +43,11 @@ pub struct App {
     minimized: HashSet<GroupId>,
     /// Members Grouply is restoring itself, whose restore events must not change the active tab.
     restoring: HashSet<Win>,
+}
+
+/// The window's visible width and height.
+fn size(w: Win) -> Option<(i32, i32)> {
+    win::frame(w).map(|f| (f.width(), f.height()))
 }
 
 fn now_ms() -> u64 {
@@ -117,7 +122,7 @@ impl App {
         }
         self.drag = Some(Drag {
             window: w,
-            start: win::frame(w),
+            size: SizeWatch::new(size(w)),
             tracker: DropTracker::new(self.settings.hold_to_group_ms),
         });
         unsafe { SetTimer(Some(self.controller), TIMER_DRAG, DRAG_POLL_MS, None) };
@@ -131,6 +136,7 @@ impl App {
         let (x, y) = win::cursor_pos();
         let target = self.drop_target(dragged, x, y);
         if let Some(drag) = self.drag.as_mut() {
+            drag.size.observe(size(dragged));
             drag.tracker.update(target, now_ms());
         }
     }
@@ -176,8 +182,7 @@ impl App {
         if drag.window != w {
             return;
         }
-        let end = win::frame(w);
-        let resized = matches!((drag.start, end), (Some(a), Some(b)) if a.width() != b.width() || a.height() != b.height());
+        let resized = drag.size.resized(size(w));
         let (x, y) = win::cursor_pos();
         drag.tracker.update(self.drop_target(w, x, y), now_ms());
         match drag.tracker.armed(now_ms()) {
