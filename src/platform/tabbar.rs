@@ -215,6 +215,26 @@ impl TabBar {
         self.invalidate();
     }
 
+    /// Applies changed settings to a bar that already exists.
+    pub fn set_options(&self, base: BarMetrics, middle_click_closes: bool) {
+        {
+            let mut st = self.state.borrow_mut();
+            st.base = base;
+            st.metrics = if st.dpi == 0 {
+                base
+            } else {
+                base.scaled(st.dpi)
+            };
+            st.middle_click_closes = middle_click_closes;
+            st.relayout();
+        }
+        self.invalidate();
+    }
+
+    pub fn is_visible(&self) -> bool {
+        win::is_visible(Win::from(self.hwnd))
+    }
+
     /// Positions the bar for an active window with visible bounds `frame` and shows it.
     pub fn place(&self, frame: Rect, work_area: Rect, dpi: u32, z: ZOrder) {
         let rect = {

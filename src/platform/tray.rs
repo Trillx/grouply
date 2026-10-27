@@ -2,6 +2,7 @@
 //! and is how the user updates and exits.
 
 use std::mem::size_of;
+use std::path::PathBuf;
 
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::Shell::{
@@ -18,6 +19,9 @@ pub enum TrayChoice {
     Update,
     CheckForUpdates,
     UngroupAll,
+    OpenSettings,
+    ReloadSettings,
+    ToggleAutostart,
     Exit,
 }
 
@@ -27,6 +31,9 @@ pub struct MenuInfo {
     pub status: String,
     pub can_update: bool,
     pub can_check: bool,
+    pub autostart: bool,
+    /// None when the user profile has no `%APPDATA%`, so there is nowhere to edit settings.
+    pub settings_path: Option<PathBuf>,
 }
 
 pub struct Tray {
@@ -94,7 +101,17 @@ pub fn show_menu(owner: HWND, info: &MenuInfo) -> Option<TrayChoice> {
     const CHECK: usize = 2;
     const UNGROUP_ALL: usize = 3;
     const EXIT: usize = 4;
+    const OPEN_SETTINGS: usize = 5;
+    const RELOAD_SETTINGS: usize = 6;
+    const AUTOSTART: usize = 7;
     let enabled = |on: bool| if on { MF_STRING } else { MF_STRING | MF_GRAYED };
+    let checked = |on: bool| {
+        if on {
+            MF_STRING | MF_CHECKED
+        } else {
+            MF_STRING | MF_UNCHECKED
+        }
+    };
     let menu = unsafe { CreatePopupMenu() }.ok()?;
     let choice = unsafe {
         let _ = AppendMenuW(menu, MF_GRAYED, 0, &HSTRING::from(&info.version));
@@ -110,6 +127,25 @@ pub fn show_menu(owner: HWND, info: &MenuInfo) -> Option<TrayChoice> {
             enabled(info.can_check),
             CHECK,
             w!("Check for updates"),
+        );
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+        let _ = AppendMenuW(
+            menu,
+            enabled(info.settings_path.is_some()),
+            OPEN_SETTINGS,
+            w!("Settings file…"),
+        );
+        let _ = AppendMenuW(
+            menu,
+            enabled(info.settings_path.is_some()),
+            RELOAD_SETTINGS,
+            w!("Reload settings"),
+        );
+        let _ = AppendMenuW(
+            menu,
+            checked(info.autostart),
+            AUTOSTART,
+            w!("Start with Windows"),
         );
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(menu, MF_STRING, UNGROUP_ALL, w!("Ungroup all windows"));
@@ -135,6 +171,9 @@ pub fn show_menu(owner: HWND, info: &MenuInfo) -> Option<TrayChoice> {
         UPDATE => Some(TrayChoice::Update),
         CHECK => Some(TrayChoice::CheckForUpdates),
         UNGROUP_ALL => Some(TrayChoice::UngroupAll),
+        OPEN_SETTINGS => Some(TrayChoice::OpenSettings),
+        RELOAD_SETTINGS => Some(TrayChoice::ReloadSettings),
+        AUTOSTART => Some(TrayChoice::ToggleAutostart),
         EXIT => Some(TrayChoice::Exit),
         _ => None,
     }

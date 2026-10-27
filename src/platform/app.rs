@@ -135,6 +135,39 @@ impl App {
         }
     }
 
+    /// Reveals and hides bars that auto-hide on maximized and top-snapped windows.
+    pub fn on_hover_tick(&mut self) {
+        if !self.settings.hide_when_maximized {
+            return;
+        }
+        let (x, y) = win::cursor_pos();
+        for id in self.groups.ids() {
+            let Some(active) = self.groups.get(id).map(|g| g.active()) else {
+                continue;
+            };
+            let Some(frame) = win::frame(active) else {
+                continue;
+            };
+            let work = win::work_area(active);
+            let metrics = self.settings.metrics.scaled(win::dpi(active));
+            if !layout::bar_overlays(frame, work, &metrics) {
+                continue;
+            }
+            let Some(visible) = self.bars.get(&id).map(TabBar::is_visible) else {
+                continue;
+            };
+            let revealed = layout::in_reveal_band(work, &metrics, x, y);
+            if revealed && !visible {
+                self.place_bar(id);
+            } else if !revealed
+                && visible
+                && let Some(bar) = self.bars.get(&id)
+            {
+                bar.hide();
+            }
+        }
+    }
+
     fn on_drag_end(&mut self, w: Win) {
         self.stop_drag_timer();
         let Some(mut drag) = self.drag.take() else {
@@ -424,6 +457,17 @@ impl App {
         }
     }
 
+    /// Applies a reloaded settings file to the running instance.
+    pub fn apply_settings(&mut self, settings: Settings) {
+        self.settings = settings;
+        for bar in self.bars.values() {
+            bar.set_options(self.settings.metrics, self.settings.middle_click_closes);
+        }
+        for id in self.groups.ids() {
+            self.place_bar(id);
+        }
+    }
+
     /// Lines every inactive member up behind the active one.
     fn sync(&mut self, id: GroupId) {
         let Some(group) = self.groups.get(id) else {
@@ -507,13 +551,23 @@ impl App {
         let Some(frame) = win::frame(active) else {
             return;
         };
+        let work = win::work_area(active);
+        let dpi = win::dpi(active);
+        let metrics = self.settings.metrics.scaled(dpi);
+        if self.settings.hide_when_maximized && layout::bar_overlays(frame, work, &metrics) {
+            let (x, y) = win::cursor_pos();
+            if !layout::in_reveal_band(work, &metrics, x, y) {
+                bar.hide();
+                return;
+            }
+        }
         let z = match win::above(active) {
             Some(w) if w.hwnd() == bar.hwnd() => ZOrder::Keep,
             // Inserting after a topmost window would make the bar topmost too.
             Some(w) if !win::is_topmost(w) => ZOrder::After(w),
             _ => ZOrder::TopNormal,
         };
-        bar.place(frame, win::work_area(active), win::dpi(active), z);
+        bar.place(frame, work, dpi, z);
     }
 
     /// The current groups, for the next instance to adopt after an update.

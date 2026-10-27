@@ -10,7 +10,7 @@ Created in [T3 Code](https://t3.codes).
 
 ## Status
 
-Early prototype. The core model, geometry and update logic are unit-tested, and CI builds every commit for ARM64 and x64. It **has not yet been tried on a real Windows desktop**, so expect rough edges.
+Early prototype. The core model, geometry, settings and update logic are unit-tested, and CI builds every commit for ARM64 and x64. It **has not yet been tried on a real Windows desktop**, so expect rough edges.
 
 ## Download
 
@@ -28,7 +28,36 @@ There's no installer: put the exe in a folder you own (for example `%LOCALAPPDAT
 - **Reorder**: drag a tab sideways. **Detach**: drag a tab well away from the bar.
 - **Close**: the tab's × or a middle-click. Right-click a tab for more.
 - **Move the group**: drag the active window; the rest follow.
+- **Settings**: tray icon → *Settings file…* opens `%APPDATA%\Grouply\settings.toml`; *Reload settings* applies your edits without a restart.
+- **Start with Windows**: tray icon → *Start with Windows* adds or removes the per-user sign-in entry.
 - **Exit**: tray icon → *Exit Grouply*. Grouped windows are never hidden, so nothing is lost if Grouply stops.
+
+## Settings
+
+The first start writes `%APPDATA%\Grouply\settings.toml`. Edit it with any text editor, then choose *Reload settings* from the tray menu. Unknown keys are ignored and reported in a tray notification; numbers are clamped to safe ranges.
+
+```toml
+# Milliseconds a window must rest on a drop zone before it groups.
+hold_to_group_ms = 350
+middle_click_closes = true
+cycle_hotkeys = true
+# Hide the bar on maximized windows until the pointer touches the top edge.
+hide_when_maximized = false
+
+# Bar dimensions in pixels at 96 DPI; scaled on other displays.
+[bar]
+height = 32
+top_gap = 4
+inset = 8
+tab_min = 72
+tab_max = 220
+spacing = 2
+padding = 8
+icon = 16
+close = 16
+caption_reserve = 150
+corner = 8
+```
 
 ## Updates
 
@@ -67,15 +96,17 @@ The platform-independent core tests run anywhere: `cargo test`.
 | `src/command.rs` | Tab bar → controller commands |
 | `src/update.rs` | Build identity, release manifest, commits-behind and update state |
 | `src/handoff.rs` | Passing groups to the restarted instance after an update |
-| `src/platform/` | Win32: WinEvent hooks, controller, tab bar window, tray, updater, window helpers |
+| `src/settings.rs` | Settings defaults, file parsing and writing |
+| `src/platform/` | Win32: WinEvent hooks, controller, tab bar window, tray, autostart, updater, window helpers |
 | `.github/workflows/build.yml` | CI: lint, test, build both architectures, publish releases from `main` |
 | `docs/design.md` | Architecture and roadmap |
 
 ## Known limitations
 
 - Windows of elevated apps can't be grouped unless Grouply itself runs elevated.
-- On maximized windows the bar overlays the top of the window instead of hiding.
-- Settings are built-in defaults; there is no settings UI or persistence yet.
+- On maximized windows the bar overlays the top of the window instead of hiding, unless `hide_when_maximized` is on; the reveal is polled every 100 ms rather than driven by a top-edge hook.
+- Settings are file-only: there is no settings window, and some changes (like `cycle_hotkeys`) take effect after *Reload settings*, not while you edit the file.
+- *Start with Windows* writes the standard per-user `Run` entry. It won't start Grouply elevated, and it points at wherever the exe lives now, so move the exe before enabling it.
 - Tabs are drawn beside the title bar, not inside it. Integrating them into the title bar needs in-process code (see `docs/design.md`).
 - Updating only works from a folder Grouply can write to, not from `Program Files`.
 

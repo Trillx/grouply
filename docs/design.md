@@ -33,6 +33,8 @@ App ──▶ TabBar::set_tabs / place
 - **Focus**: the bar is `WS_EX_NOACTIVATE`, so a tab click leaves Grouply holding the last input event. That makes the following `SetForegroundWindow` legitimate.
 - **Coordinates** are physical pixels (per-monitor-v2 DPI awareness). The visible frame comes from `DWMWA_EXTENDED_FRAME_BOUNDS`, and each window keeps its own invisible-border insets when resized.
 - Windows of more elevated processes are excluded; UIPI would reject our moves.
+- **Settings** are read from `%APPDATA%\Grouply\settings.toml` at startup and from *Reload settings*; the file is plain TOML, unknown keys are reported and ignored, and values are clamped. **Start with Windows** is one `HKCU\...\CurrentVersion\Run` value, read back from the registry rather than mirrored in the file.
+- **Auto-hide** on maximized and top-snapped windows is a 100 ms cursor poll, so the bar appears when the pointer reaches the top edge and disappears when it leaves. The timer only runs while `hide_when_maximized` is on.
 
 ## Updates
 
@@ -52,8 +54,8 @@ New instance      ──▶ waits for the old instance's mutex to be abandoned, 
 ## Roadmap
 
 1. **Run and harden on a WoA device**: z-order edge cases, Snap layouts, virtual desktops, multi-monitor DPI moves, UWP frames.
-2. **Settings**: persist `Settings` (TOML under `%APPDATA%\Grouply`), add a small settings window, run at sign-in.
-3. **Bar polish**: per-pixel alpha (Direct2D into `UpdateLayeredWindow`) instead of a colour key; hide-when-maximized with hover reveal; tab previews via DWM thumbnails; system accent colours.
+2. **Settings**: persist `Settings` (TOML under `%APPDATA%\Grouply`), run at sign-in and live reload are done; a small settings window is still missing.
+3. **Bar polish**: per-pixel alpha (Direct2D into `UpdateLayeredWindow`) instead of a colour key; tab previews via DWM thumbnails; system accent colours. Hide-when-maximized with hover reveal is done (polled).
 4. **Rules**: auto-group by process, window class or title; saved groups.
 5. **Elevated windows**: an optional signed build with `uiAccess=true`, installed under Program Files.
 6. **Optional in-process features** (title-bar integration, replacing Explorer/Notepad tabs, Ctrl+T): these need hooks inside target processes. An ARM64X DLL loads into both ARM64 and x64-emulated processes, so it may let one file replace Groupy's separate ARM64 and x64 hook builds. Whether `SetWindowsHookEx` injects it into emulated processes still needs testing. A separate x86 build is required for 32-bit apps. This should stay opt-in, because the out-of-process core already covers the main feature.

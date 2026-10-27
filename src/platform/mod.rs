@@ -1,6 +1,7 @@
 //! Win32 front end: one UI thread owning a hidden controller window, the hooks and the tab bars.
 
 mod app;
+mod autostart;
 mod hooks;
 mod tabbar;
 mod tray;
@@ -20,7 +21,7 @@ use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    MOD_NOREPEAT, MOD_SHIFT, MOD_WIN, RegisterHotKey, VK_OEM_3,
+    MOD_NOREPEAT, MOD_SHIFT, MOD_WIN, RegisterHotKey, UnregisterHotKey, VK_OEM_3,
 };
 use windows::Win32::UI::Shell::NIN_BALLOONUSERCLICK;
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -33,7 +34,7 @@ use updater::{Outcome, WM_APP_UPDATE};
 
 use crate::command::TabCommand;
 use crate::handoff::Launch;
-use crate::settings::Settings;
+use crate::settings::{self, Settings};
 use crate::update::{self, BuildInfo, Job, Updater};
 
 const CONTROLLER_CLASS: PCWSTR = w!("GrouplyController");
@@ -41,9 +42,12 @@ const WM_APP_TRAY: u32 = WM_APP + 3;
 const HOTKEY_NEXT: i32 = 1;
 const HOTKEY_PREV: i32 = 2;
 const TIMER_UPDATE: usize = 2;
+const TIMER_HOVER: usize = 3;
 /// The first check waits a little, so the network is up when Grouply starts at sign-in.
 const FIRST_CHECK_MS: u32 = 30_000;
 const CHECK_INTERVAL_MS: u32 = 6 * 60 * 60 * 1000;
+/// How often auto-hidden bars follow the pointer. Only runs when the setting is on.
+const HOVER_POLL_MS: u32 = 100;
 
 thread_local! {
     static APP: RefCell<Option<App>> = const { RefCell::new(None) };
@@ -131,30 +135,17 @@ pub fn run() -> windows::core::Result<()> {
     };
     TASKBAR_CREATED.set(unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) });
 
-    let settings = Settings::default();
-    if settings.cycle_hotkeys {
-        // Win+` and Win+Shift+` (the key below Esc on US layouts). Another app may own them.
-        unsafe {
-            let _ = RegisterHotKey(
-                Some(controller),
-                HOTKEY_NEXT,
-                MOD_WIN | MOD_NOREPEAT,
-                VK_OEM_3.0 as u32,
-            );
-            let _ = RegisterHotKey(
-                Some(controller),
-                HOTKEY_PREV,
-                MOD_WIN | MOD_SHIFT | MOD_NOREPEAT,
-                VK_OEM_3.0 as u32,
-            );
-        }
-    }
+    let loaded = load_settings();
+    let settings = loaded.settings.clone();
+    register_hotkeys(controller, settings.cycle_hotkeys);
+    configure_hover_timer(controller, settings.hide_when_maximized);
     APP.with_borrow_mut(|app| *app = Some(App::new(controller, instance, settings)));
     with_app(|app| app.adopt(&launch.groups));
     let tooltip = UPDATER.with_borrow(Updater::tooltip);
     TRAY.with_borrow_mut(|tray| *tray = Some(Tray::add(controller, WM_APP_TRAY, &tooltip)));
+    notify_warnings(&loaded.warnings);
     if UPDATER.with_borrow(Updater::can_check) {
-        unsafe { SetTimer(Some(controller), TIMER_UPDATE, FIRST_CHECK_MS, None) };
+        let _ = unsafe { SetTimer(Some(controller), TIMER_UPDATE, FIRST_CHECK_MS, None) };
     }
     let hooks = hooks::Hooks::install(controller)?;
 
@@ -177,6 +168,92 @@ pub fn run() -> windows::core::Result<()> {
 pub fn report_fatal(error: &windows::core::Error) {
     let text = HSTRING::from(format!("Grouply could not start.\n\n{error}"));
     unsafe { MessageBoxW(None, &text, w!("Grouply"), MB_ICONERROR | MB_OK) };
+}
+
+fn load_settings() -> settings::Loaded {
+    match settings::config_path() {
+        Some(path) => settings::load_or_create(&path),
+        None => settings::Loaded::default(),
+    }
+}
+
+fn notify(text: &str) {
+    TRAY.with_borrow(|tray| {
+        if let Some(tray) = tray {
+            tray.notify("Grouply settings", text);
+        }
+    });
+}
+
+fn notify_warnings(warnings: &[String]) {
+    if !warnings.is_empty() {
+        notify(&warnings.join("\n"));
+    }
+}
+
+/// Registers or releases the tab-cycling hotkeys, e.g. after a settings reload.
+fn register_hotkeys(controller: HWND, enabled: bool) {
+    unsafe {
+        let _ = UnregisterHotKey(Some(controller), HOTKEY_NEXT);
+        let _ = UnregisterHotKey(Some(controller), HOTKEY_PREV);
+        if enabled {
+            // Win+` and Win+Shift+` (the key below Esc on US layouts). Another app may own them.
+            let _ = RegisterHotKey(
+                Some(controller),
+                HOTKEY_NEXT,
+                MOD_WIN | MOD_NOREPEAT,
+                VK_OEM_3.0 as u32,
+            );
+            let _ = RegisterHotKey(
+                Some(controller),
+                HOTKEY_PREV,
+                MOD_WIN | MOD_SHIFT | MOD_NOREPEAT,
+                VK_OEM_3.0 as u32,
+            );
+        }
+    }
+}
+
+fn configure_hover_timer(controller: HWND, on: bool) {
+    unsafe {
+        if on {
+            let _ = SetTimer(Some(controller), TIMER_HOVER, HOVER_POLL_MS, None);
+        } else {
+            let _ = KillTimer(Some(controller), TIMER_HOVER);
+        }
+    }
+}
+
+fn open_settings() {
+    let Some(path) = settings::config_path() else {
+        return;
+    };
+    if !path.exists() {
+        let _ = Settings::default().save(&path);
+    }
+    if let Err(error) = std::process::Command::new("notepad.exe").arg(&path).spawn() {
+        notify(&format!("couldn't open {}: {error}", path.display()));
+    }
+}
+
+fn reload_settings(controller: HWND) {
+    // Unlike startup, a missing file is reported rather than recreated, so a deleted file is
+    // visible in the notification.
+    let loaded = match settings::config_path() {
+        Some(path) => settings::load(&path),
+        None => settings::Loaded::default(),
+    };
+    register_hotkeys(controller, loaded.settings.cycle_hotkeys);
+    configure_hover_timer(controller, loaded.settings.hide_when_maximized);
+    with_app(|app| app.apply_settings(loaded.settings));
+    notify_warnings(&loaded.warnings);
+}
+
+fn toggle_autostart() {
+    let enable = !autostart::is_enabled();
+    if let Err(error) = autostart::set_enabled(enable) {
+        notify(&error);
+    }
 }
 
 /// Starts the job `begin` hands out, if any, and shows the new state in the tray.
@@ -202,6 +279,8 @@ fn menu_info() -> MenuInfo {
         status: u.status().describe(),
         can_update: u.can_install(),
         can_check: u.can_check(),
+        autostart: autostart::is_enabled(),
+        settings_path: settings::config_path(),
     })
 }
 
@@ -268,6 +347,9 @@ unsafe extern "system" fn controller_proc(
         WM_TIMER if wparam.0 == app::TIMER_DRAG => {
             with_app(App::on_drag_tick);
         }
+        WM_TIMER if wparam.0 == TIMER_HOVER => {
+            with_app(App::on_hover_tick);
+        }
         WM_TIMER if wparam.0 == TIMER_UPDATE => {
             unsafe { SetTimer(Some(hwnd), TIMER_UPDATE, CHECK_INTERVAL_MS, None) };
             start_update(hwnd, Updater::begin_check);
@@ -293,6 +375,9 @@ unsafe extern "system" fn controller_proc(
                     Some(TrayChoice::UngroupAll) => {
                         with_app(App::ungroup_all);
                     }
+                    Some(TrayChoice::OpenSettings) => open_settings(),
+                    Some(TrayChoice::ReloadSettings) => reload_settings(hwnd),
+                    Some(TrayChoice::ToggleAutostart) => toggle_autostart(),
                     Some(TrayChoice::Exit) => {
                         let _ = unsafe { DestroyWindow(hwnd) };
                     }

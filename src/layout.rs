@@ -122,6 +122,25 @@ pub fn bar_rect(frame: Rect, work_area: Rect, m: &BarMetrics) -> Rect {
     Rect::new(left, top, right, top + m.height)
 }
 
+/// Whether there is no room above `frame`, so [`bar_rect`] overlays its caption instead.
+pub fn bar_overlays(frame: Rect, work_area: Rect, m: &BarMetrics) -> bool {
+    frame.top - m.height < work_area.top
+}
+
+/// The strip along the top of the work area that reveals an auto-hidden bar.
+pub fn reveal_band(work_area: Rect, m: &BarMetrics) -> Rect {
+    Rect::new(
+        work_area.left,
+        work_area.top,
+        work_area.right,
+        work_area.top + m.height.max(1),
+    )
+}
+
+pub fn in_reveal_band(work_area: Rect, m: &BarMetrics, x: i32, y: i32) -> bool {
+    reveal_band(work_area, m).contains(x, y)
+}
+
 /// One tab's parts, in bar-local coordinates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TabGeom {
@@ -316,5 +335,20 @@ mod tests {
         assert!(!in_drop_zone(frame, None, 32, 300, 200));
         assert!(in_drop_zone(frame, Some(bar), 32, 300, 80));
         assert!(!in_drop_zone(frame, Some(bar), 32, 50, 80));
+    }
+
+    #[test]
+    fn overlay_and_reveal_band_agree_with_bar_placement() {
+        let m = BarMetrics::default();
+        let normal = Rect::new(100, 200, 900, 800);
+        let maximized = Rect::new(0, 0, 1920, 1040);
+        assert!(!bar_overlays(normal, WORK, &m));
+        assert!(bar_overlays(maximized, WORK, &m));
+
+        let band = reveal_band(WORK, &m);
+        assert_eq!(band, Rect::new(0, 0, 1920, m.height));
+        assert!(in_reveal_band(WORK, &m, 500, m.height - 1));
+        assert!(!in_reveal_band(WORK, &m, 500, m.height));
+        assert!(!in_reveal_band(WORK, &m, -1, 1), "left of the monitor");
     }
 }
