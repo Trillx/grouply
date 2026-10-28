@@ -459,7 +459,11 @@ impl App {
         }
     }
 
-    /// Applies a reloaded settings file to the running instance.
+    pub fn settings(&self) -> &Settings {
+        &self.settings
+    }
+
+    /// Applies changed settings to the running instance.
     pub fn apply_settings(&mut self, settings: Settings) {
         self.settings = settings;
         for bar in self.bars.values() {

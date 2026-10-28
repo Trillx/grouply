@@ -3,6 +3,7 @@
 mod app;
 mod autostart;
 mod hooks;
+mod settings_window;
 mod tabbar;
 mod tray;
 mod updater;
@@ -28,6 +29,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{HSTRING, PCWSTR, w};
 
 use app::App;
+use settings_window::WM_APP_SETTINGS;
 use tabbar::WM_APP_TAB;
 use tray::{MenuInfo, Tray, TrayChoice};
 use updater::{Outcome, WM_APP_UPDATE};
@@ -43,6 +45,9 @@ const HOTKEY_NEXT: i32 = 1;
 const HOTKEY_PREV: i32 = 2;
 const TIMER_UPDATE: usize = 2;
 const TIMER_HOVER: usize = 3;
+const TIMER_SAVE: usize = 4;
+/// The settings window saves this long after the last change, not on every step of a drag.
+const SAVE_DELAY_MS: u32 = 600;
 /// The first check waits a little, so the network is up when Grouply starts at sign-in.
 const FIRST_CHECK_MS: u32 = 30_000;
 const CHECK_INTERVAL_MS: u32 = 6 * 60 * 60 * 1000;
@@ -53,6 +58,8 @@ thread_local! {
     static APP: RefCell<Option<App>> = const { RefCell::new(None) };
     static TRAY: RefCell<Option<Tray>> = const { RefCell::new(None) };
     static TASKBAR_CREATED: Cell<u32> = const { Cell::new(0) };
+    /// Settings changed in the window and not yet written to the file.
+    static SAVE_PENDING: Cell<bool> = const { Cell::new(false) };
     static UPDATER: RefCell<Updater> = RefCell::new(Updater::new(BuildInfo::current(), update::ARCH));
 }
 
@@ -114,6 +121,7 @@ pub fn run() -> windows::core::Result<()> {
         return Err(windows::core::Error::from_thread());
     }
     tabbar::register_class(instance)?;
+    settings_window::register_class(instance)?;
 
     // A real (hidden) top-level window rather than a message-only one: it owns popup menus and
     // receives broadcasts such as theme changes and TaskbarCreated.
@@ -245,13 +253,65 @@ fn reload_settings(controller: HWND) {
         Some(path) => settings::load(&path),
         None => settings::Loaded::default(),
     };
-    register_hotkeys(controller, loaded.settings.cycle_hotkeys);
-    configure_hover_timer(
-        controller,
-        loaded.settings.maximized != MaximizedBar::Always,
-    );
-    with_app(|app| app.apply_settings(loaded.settings));
+    // Hand edits win over unsaved changes from the window.
+    SAVE_PENDING.set(false);
+    settings_window::reload(&loaded.settings);
+    apply_settings(controller, loaded.settings);
     notify_warnings(&loaded.warnings);
+}
+
+/// Applies settings to the running app: its bars, the hotkeys and the top-edge poll.
+fn apply_settings(controller: HWND, settings: Settings) {
+    let previous = with_app(|app| app.settings().cycle_hotkeys);
+    if previous != Some(settings.cycle_hotkeys) {
+        register_hotkeys(controller, settings.cycle_hotkeys);
+    }
+    configure_hover_timer(controller, settings.maximized != MaximizedBar::Always);
+    with_app(|app| app.apply_settings(settings));
+}
+
+fn open_settings_window(controller: HWND) {
+    let Some(settings) = with_app(|app| app.settings().clone()) else {
+        return;
+    };
+    let Ok(module) = (unsafe { GetModuleHandleW(None) }) else {
+        return;
+    };
+    settings_window::open(module.into(), controller, settings);
+}
+
+fn on_settings_window(controller: HWND, request: usize) {
+    match request {
+        settings_window::CHANGED => {
+            if let Some(settings) = settings_window::settings() {
+                apply_settings(controller, settings);
+                SAVE_PENDING.set(true);
+                let _ = unsafe { SetTimer(Some(controller), TIMER_SAVE, SAVE_DELAY_MS, None) };
+            }
+        }
+        settings_window::OPEN_FILE => {
+            save_settings(controller);
+            open_settings();
+        }
+        _ => save_settings(controller),
+    }
+}
+
+/// Writes the app's settings if the window changed them since the last save.
+fn save_settings(controller: HWND) {
+    let _ = unsafe { KillTimer(Some(controller), TIMER_SAVE) };
+    if !SAVE_PENDING.replace(false) {
+        return;
+    }
+    let (Some(path), Some(settings)) = (
+        settings::config_path(),
+        with_app(|app| app.settings().clone()),
+    ) else {
+        return;
+    };
+    if let Err(error) = settings.save(&path) {
+        notify(&format!("couldn't save {}: {error}", path.display()));
+    }
 }
 
 fn toggle_autostart() {
@@ -259,6 +319,7 @@ fn toggle_autostart() {
     if let Err(error) = autostart::set_enabled(enable) {
         notify(&error);
     }
+    settings_window::refresh_autostart();
 }
 
 /// Starts the job `begin` hands out, if any, and shows the new state in the tray.
@@ -355,6 +416,8 @@ unsafe extern "system" fn controller_proc(
         WM_TIMER if wparam.0 == TIMER_HOVER => {
             with_app(App::on_hover_tick);
         }
+        WM_TIMER if wparam.0 == TIMER_SAVE => save_settings(hwnd),
+        WM_APP_SETTINGS => on_settings_window(hwnd, wparam.0),
         WM_TIMER if wparam.0 == TIMER_UPDATE => {
             unsafe { SetTimer(Some(hwnd), TIMER_UPDATE, CHECK_INTERVAL_MS, None) };
             start_update(hwnd, Updater::begin_check);
@@ -380,7 +443,7 @@ unsafe extern "system" fn controller_proc(
                     Some(TrayChoice::UngroupAll) => {
                         with_app(App::ungroup_all);
                     }
-                    Some(TrayChoice::OpenSettings) => open_settings(),
+                    Some(TrayChoice::OpenSettings) => open_settings_window(hwnd),
                     Some(TrayChoice::ReloadSettings) => reload_settings(hwnd),
                     Some(TrayChoice::ToggleAutostart) => toggle_autostart(),
                     Some(TrayChoice::Exit) => {
@@ -393,7 +456,10 @@ unsafe extern "system" fn controller_proc(
         WM_SETTINGCHANGE => {
             with_app(App::refresh_theme);
         }
-        WM_DESTROY => unsafe { PostQuitMessage(0) },
+        WM_DESTROY => {
+            save_settings(hwnd);
+            unsafe { PostQuitMessage(0) }
+        }
         _ if msg != 0 && msg == TASKBAR_CREATED.get() => {
             TRAY.with_borrow(|tray| tray.as_ref().map(Tray::show));
         }

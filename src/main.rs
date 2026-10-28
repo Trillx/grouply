@@ -7,6 +7,7 @@ mod handoff;
 mod layout;
 mod model;
 mod settings;
+mod settings_ui;
 mod update;
 
 #[cfg(windows)]
