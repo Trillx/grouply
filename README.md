@@ -28,13 +28,13 @@ There's no installer: put the exe in a folder you own (for example `%LOCALAPPDAT
 - **Reorder**: drag a tab sideways. **Detach**: drag a tab well away from the bar.
 - **Close**: the tab's × or a middle-click. Right-click a tab for more.
 - **Move the group**: drag the active window; the rest follow.
-- **Settings**: tray icon → *Settings file…* opens `%APPDATA%\Grouply\settings.toml`; *Reload settings* applies your edits without a restart.
+- **Settings**: tray icon → *Settings…* opens the settings window. Pick a preset, turn the dials, and watch the preview; changes apply immediately and are saved to `%APPDATA%\Grouply\settings.toml`.
 - **Start with Windows**: tray icon → *Start with Windows* adds or removes the per-user sign-in entry.
 - **Exit**: tray icon → *Exit Grouply*. Grouped windows are never hidden, so nothing is lost if Grouply stops.
 
 ## Settings
 
-The first start writes `%APPDATA%\Grouply\settings.toml`. Edit it with any text editor, then choose *Reload settings* from the tray menu. Unknown keys are ignored and reported in a tray notification; numbers are clamped to safe ranges.
+The settings window covers everything below. The first start also writes `%APPDATA%\Grouply\settings.toml`, which you can edit with any text editor and then apply with *Reload settings* from the tray menu. Unknown keys are ignored and reported in a tray notification; numbers are clamped to safe ranges.
 
 ```toml
 # Milliseconds a window must rest on a drop zone before it groups.
@@ -99,7 +99,8 @@ The platform-independent core tests run anywhere: `cargo test`.
 | `src/update.rs` | Build identity, release manifest, commits-behind and update state |
 | `src/handoff.rs` | Passing groups to the restarted instance after an update |
 | `src/settings.rs` | Settings defaults, file parsing and writing |
-| `src/platform/` | Win32: WinEvent hooks, controller, tab bar window, tray, autostart, updater, window helpers |
+| `src/settings_ui.rs` | Settings window layout, presets and dial arithmetic |
+| `src/platform/` | Win32: WinEvent hooks, controller, tab bar window, settings window, tray, autostart, updater, window helpers |
 | `.github/workflows/build.yml` | CI: lint, test, build both architectures, publish releases from `main` |
 | `docs/design.md` | Architecture and roadmap |
 
@@ -107,7 +108,8 @@ The platform-independent core tests run anywhere: `cargo test`.
 
 - Windows of elevated apps can't be grouped unless Grouply itself runs elevated.
 - On maximized windows the whole bar covers the top of the window, so by default it stays tucked to a sliver until the pointer touches the top edge. That reveal is polled every 100 ms rather than driven by a top-edge hook.
-- Settings are file-only: there is no settings window, and some changes (like `cycle_hotkeys`) take effect after *Reload settings*, not while you edit the file.
+- The settings window rewrites `settings.toml`, so comments and unknown keys you added by hand are lost once you change something there. Hand edits still need *Reload settings*.
+- The settings window draws its own controls, so screen readers can't see them yet; the file works with any editor.
 - *Start with Windows* writes the standard per-user `Run` entry. It won't start Grouply elevated, and it points at wherever the exe lives now, so move the exe before enabling it.
 - Tabs are drawn beside the title bar, not inside it. Integrating them into the title bar needs in-process code (see `docs/design.md`).
 - Updating only works from a folder Grouply can write to, not from `Program Files`.

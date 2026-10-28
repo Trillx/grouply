@@ -91,7 +91,7 @@ impl Tray {
 }
 
 /// Grouply's icon, embedded by `build.rs` as resource 1.
-const APP_ICON: PCWSTR = PCWSTR(1 as _);
+pub(super) const APP_ICON: PCWSTR = PCWSTR(1 as _);
 
 /// The app icon at the notification area's size, or the stock application icon if the executable
 /// has none.
@@ -152,12 +152,7 @@ pub fn show_menu(owner: HWND, info: &MenuInfo) -> Option<TrayChoice> {
             w!("Check for updates"),
         );
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-        let _ = AppendMenuW(
-            menu,
-            enabled(info.settings_path.is_some()),
-            OPEN_SETTINGS,
-            w!("Settings file…"),
-        );
+        let _ = AppendMenuW(menu, MF_STRING, OPEN_SETTINGS, w!("Settings…"));
         let _ = AppendMenuW(
             menu,
             enabled(info.settings_path.is_some()),

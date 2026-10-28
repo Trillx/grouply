@@ -11,6 +11,7 @@ use std::rc::Rc;
 
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::*;
+use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
 };
@@ -30,8 +31,6 @@ const _: () = assert!(
 );
 
 const CLASS: PCWSTR = w!("GrouplyTabBar");
-/// Defined under `Win32_UI_Controls` in the bindings; spelled out to avoid that whole feature.
-const WM_MOUSELEAVE: u32 = 0x02A3;
 /// Colour key: pixels of exactly this colour are transparent.
 const KEY: COLORREF = rgb(255, 0, 254);
 
@@ -40,7 +39,7 @@ const fn rgb(r: u8, g: u8, b: u8) -> COLORREF {
 }
 
 #[derive(Clone, Copy)]
-struct Palette {
+pub(super) struct Palette {
     active: COLORREF,
     inactive: COLORREF,
     hover: COLORREF,
@@ -51,7 +50,7 @@ struct Palette {
     sliver: COLORREF,
 }
 
-const LIGHT: Palette = Palette {
+pub(super) const LIGHT: Palette = Palette {
     active: rgb(0xFF, 0xFF, 0xFF),
     inactive: rgb(0xE3, 0xE3, 0xE3),
     hover: rgb(0xEE, 0xEE, 0xEE),
@@ -61,7 +60,7 @@ const LIGHT: Palette = Palette {
     sliver: rgb(0xBD, 0xBD, 0xBD),
 };
 
-const DARK: Palette = Palette {
+pub(super) const DARK: Palette = Palette {
     active: rgb(0x3A, 0x3A, 0x3A),
     inactive: rgb(0x1F, 0x1F, 0x1F),
     hover: rgb(0x2B, 0x2B, 0x2B),
@@ -74,6 +73,20 @@ const DARK: Palette = Palette {
 pub struct TabView {
     pub title: String,
     pub icon: HICON,
+}
+
+/// Everything needed to draw a bar's tabs, so the settings preview draws them exactly as a real
+/// bar would.
+pub(super) struct BarPicture<'a> {
+    pub tabs: &'a [TabView],
+    pub active: usize,
+    pub geoms: &'a [TabGeom],
+    pub metrics: &'a BarMetrics,
+    pub palette: Palette,
+    pub font: HFONT,
+    pub hover: Hit,
+    /// Draw a sliver of each tab instead of the tabs themselves.
+    pub tucked: bool,
 }
 
 /// Where the bar goes in the z-order.
@@ -342,7 +355,7 @@ impl Drop for TabBar {
     }
 }
 
-fn make_font(dpi: u32) -> HFONT {
+pub(super) fn make_font(dpi: u32) -> HFONT {
     // 9 pt, the size of standard window captions.
     let height = -(12 * dpi as i32 / 96);
     unsafe {
@@ -629,19 +642,45 @@ unsafe fn draw(hwnd: HWND, hdc: HDC, st: &State) {
         let old_bitmap = SelectObject(mem, bitmap.into());
         fill(mem, client, KEY);
 
-        let old_font = SelectObject(mem, st.font.into());
-        SetBkMode(mem, TRANSPARENT);
-        let p = st.palette;
-        let m = &st.metrics;
-        if st.tucked {
-            for (i, g) in st.geoms.iter().enumerate() {
-                let color = if i == st.active { p.accent } else { p.sliver };
-                sliver_shape(mem, g.tab, h, m.corner, color);
+        paint_tabs(
+            mem,
+            &BarPicture {
+                tabs: &st.tabs,
+                active: st.active,
+                geoms: &st.geoms,
+                metrics: &st.metrics,
+                palette: st.palette,
+                font: st.font,
+                hover: st.hover,
+                tucked: st.tucked,
+            },
+            h,
+        );
+
+        let _ = BitBlt(hdc, 0, 0, w, h, Some(mem), 0, 0, SRCCOPY);
+        SelectObject(mem, old_bitmap);
+        let _ = DeleteObject(bitmap.into());
+        let _ = DeleteDC(mem);
+    }
+}
+
+/// Draws a bar's tabs with the bar's top-left corner at the DC's origin. `height` is the height
+/// of the area being painted: the whole bar, or a tucked sliver.
+pub(super) unsafe fn paint_tabs(hdc: HDC, pic: &BarPicture, h: i32) {
+    unsafe {
+        let old_font = SelectObject(hdc, pic.font.into());
+        SetBkMode(hdc, TRANSPARENT);
+        let p = pic.palette;
+        let m = pic.metrics;
+        if pic.tucked {
+            for (i, g) in pic.geoms.iter().enumerate() {
+                let color = if i == pic.active { p.accent } else { p.sliver };
+                sliver_shape(hdc, g.tab, h, m.corner, color);
             }
         } else {
-            for (i, (tab, g)) in st.tabs.iter().zip(&st.geoms).enumerate() {
-                let active = i == st.active;
-                let hovered = matches!(st.hover, Hit::Tab(j) | Hit::Close(j) if j == i);
+            for (i, (tab, g)) in pic.tabs.iter().zip(pic.geoms).enumerate() {
+                let active = i == pic.active;
+                let hovered = matches!(pic.hover, Hit::Tab(j) | Hit::Close(j) if j == i);
                 let color = if active {
                     p.active
                 } else if hovered {
@@ -649,7 +688,7 @@ unsafe fn draw(hwnd: HWND, hdc: HDC, st: &State) {
                 } else {
                     p.inactive
                 };
-                tab_shape(mem, g.tab, m.corner, color);
+                tab_shape(hdc, g.tab, m.corner, color);
                 if active {
                     let stripe = (m.height / 16).max(2);
                     let r = Rect::new(
@@ -658,11 +697,11 @@ unsafe fn draw(hwnd: HWND, hdc: HDC, st: &State) {
                         g.tab.right - m.corner / 2,
                         g.tab.top + stripe,
                     );
-                    fill(mem, to_win_rect(r), p.accent);
+                    fill(hdc, to_win_rect(r), p.accent);
                 }
                 if !tab.icon.is_invalid() {
                     let _ = DrawIconEx(
-                        mem,
+                        hdc,
                         g.icon.left,
                         g.icon.top,
                         tab.icon,
@@ -673,26 +712,21 @@ unsafe fn draw(hwnd: HWND, hdc: HDC, st: &State) {
                         DI_NORMAL,
                     );
                 }
-                SetTextColor(mem, p.text);
+                SetTextColor(hdc, p.text);
                 let mut text: Vec<u16> = tab.title.encode_utf16().collect();
                 let mut r = to_win_rect(g.text);
                 DrawTextW(
-                    mem,
+                    hdc,
                     &mut text,
                     &mut r,
                     DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX | DT_LEFT,
                 );
                 if active || hovered {
-                    close_glyph(mem, g.close, st.hover == Hit::Close(i), &p, m);
+                    close_glyph(hdc, g.close, pic.hover == Hit::Close(i), &p, m);
                 }
             }
         }
-
-        let _ = BitBlt(hdc, 0, 0, w, h, Some(mem), 0, 0, SRCCOPY);
-        SelectObject(mem, old_font);
-        SelectObject(mem, old_bitmap);
-        let _ = DeleteObject(bitmap.into());
-        let _ = DeleteDC(mem);
+        SelectObject(hdc, old_font);
     }
 }
 

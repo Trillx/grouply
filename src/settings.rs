@@ -49,9 +49,142 @@ impl MaximizedBar {
     }
 
     fn from_name(name: &str) -> Option<Self> {
-        [Self::Always, Self::Tucked, Self::Hidden]
+        Self::ALL
             .into_iter()
             .find(|mode| mode.name().eq_ignore_ascii_case(name))
+    }
+
+    pub const ALL: [Self; 3] = [Self::Always, Self::Tucked, Self::Hidden];
+}
+
+/// A numeric setting: its key in the file and the range its values are clamped to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Field {
+    HoldToGroup,
+    Height,
+    TopGap,
+    Inset,
+    TabMin,
+    TabMax,
+    Spacing,
+    Padding,
+    Icon,
+    Close,
+    CaptionReserve,
+    Corner,
+}
+
+impl Field {
+    /// The `[bar]` fields, in the order the file lists them.
+    pub const BAR: [Self; 11] = [
+        Self::Height,
+        Self::TopGap,
+        Self::Inset,
+        Self::TabMin,
+        Self::TabMax,
+        Self::Spacing,
+        Self::Padding,
+        Self::Icon,
+        Self::Close,
+        Self::CaptionReserve,
+        Self::Corner,
+    ];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::HoldToGroup => "hold_to_group_ms",
+            Self::Height => "height",
+            Self::TopGap => "top_gap",
+            Self::Inset => "inset",
+            Self::TabMin => "tab_min",
+            Self::TabMax => "tab_max",
+            Self::Spacing => "spacing",
+            Self::Padding => "padding",
+            Self::Icon => "icon",
+            Self::Close => "close",
+            Self::CaptionReserve => "caption_reserve",
+            Self::Corner => "corner",
+        }
+    }
+
+    /// The file section holding the key: `""` for the top level.
+    fn section(self) -> &'static str {
+        if self == Self::HoldToGroup { "" } else { "bar" }
+    }
+
+    /// Inclusive range of accepted values.
+    pub fn range(self) -> (i32, i32) {
+        match self {
+            Self::HoldToGroup => (0, 5_000),
+            Self::Height => (16, 96),
+            Self::TopGap => (0, 32),
+            Self::Inset => (0, 64),
+            Self::TabMin => (32, 400),
+            Self::TabMax => (32, 800),
+            Self::Spacing => (0, 16),
+            Self::Padding => (0, 32),
+            Self::Icon | Self::Close => (8, 64),
+            Self::CaptionReserve => (0, 600),
+            Self::Corner => (0, 32),
+        }
+    }
+
+    pub fn get(self, s: &Settings) -> i32 {
+        let m = &s.metrics;
+        match self {
+            Self::HoldToGroup => s.hold_to_group_ms as i32,
+            Self::Height => m.height,
+            Self::TopGap => m.top_gap,
+            Self::Inset => m.inset,
+            Self::TabMin => m.tab_min,
+            Self::TabMax => m.tab_max,
+            Self::Spacing => m.spacing,
+            Self::Padding => m.padding,
+            Self::Icon => m.icon,
+            Self::Close => m.close,
+            Self::CaptionReserve => m.caption_reserve,
+            Self::Corner => m.corner,
+        }
+    }
+
+    /// Stores `value` clamped to the range. Raising the narrowest tab past the widest raises
+    /// the widest too, and lowering the widest below the narrowest lowers the narrowest.
+    pub fn set(self, s: &mut Settings, value: i32) {
+        self.store(s, value.into());
+        let m = &mut s.metrics;
+        match self {
+            Self::TabMin if m.tab_max < m.tab_min => m.tab_max = m.tab_min,
+            // Both ranges start at 32, and tab_min tops out at 400, so this stays in range.
+            Self::TabMax if m.tab_min > m.tab_max => m.tab_min = m.tab_max,
+            _ => {}
+        }
+    }
+
+    /// Stores `value` clamped to the range, leaving other fields alone.
+    fn store(self, s: &mut Settings, value: i64) {
+        let (min, max) = self.range();
+        let v = value.clamp(min.into(), max.into()) as i32;
+        let m = &mut s.metrics;
+        match self {
+            Self::HoldToGroup => s.hold_to_group_ms = v as u64,
+            Self::Height => m.height = v,
+            Self::TopGap => m.top_gap = v,
+            Self::Inset => m.inset = v,
+            Self::TabMin => m.tab_min = v,
+            Self::TabMax => m.tab_max = v,
+            Self::Spacing => m.spacing = v,
+            Self::Padding => m.padding = v,
+            Self::Icon => m.icon = v,
+            Self::Close => m.close = v,
+            Self::CaptionReserve => m.caption_reserve = v,
+            Self::Corner => m.corner = v,
+        }
+    }
+
+    fn find(section: &str, key: &str) -> Option<Self> {
+        std::iter::once(Self::HoldToGroup)
+            .chain(Self::BAR)
+            .find(|f| f.section() == section && f.key() == key)
     }
 }
 
@@ -127,8 +260,9 @@ impl Settings {
     /// The file this `save` writes, with a short explanation of every key.
     pub fn to_toml(&self) -> String {
         let mut out = String::new();
-        out.push_str("# Grouply settings. Edit with any text editor, then choose\n");
-        out.push_str("# \"Reload settings\" from the tray menu.\n\n");
+        out.push_str("# Grouply settings. Change them in the settings window (tray icon,\n");
+        out.push_str("# Settings), or edit this file and choose \"Reload settings\" from the\n");
+        out.push_str("# tray menu. The settings window rewrites this file.\n\n");
         out.push_str("# Milliseconds a window must rest on a drop zone before it groups.\n");
         let _ = writeln!(out, "hold_to_group_ms = {}", self.hold_to_group_ms);
         let _ = writeln!(out, "middle_click_closes = {}", self.middle_click_closes);
@@ -143,21 +277,8 @@ impl Settings {
         let _ = writeln!(out, "maximized = \"{}\"", self.maximized.name());
         out.push_str("\n# Bar dimensions in pixels at 96 DPI; scaled on other displays.\n");
         out.push_str("[bar]\n");
-        let m = &self.metrics;
-        for (key, value) in [
-            ("height", m.height),
-            ("top_gap", m.top_gap),
-            ("inset", m.inset),
-            ("tab_min", m.tab_min),
-            ("tab_max", m.tab_max),
-            ("spacing", m.spacing),
-            ("padding", m.padding),
-            ("icon", m.icon),
-            ("close", m.close),
-            ("caption_reserve", m.caption_reserve),
-            ("corner", m.corner),
-        ] {
-            let _ = writeln!(out, "{key} = {value}");
+        for field in Field::BAR {
+            let _ = writeln!(out, "{} = {}", field.key(), field.get(self));
         }
         out
     }
@@ -189,7 +310,6 @@ pub fn parse(text: &str) -> Loaded {
         let key = key.trim().to_ascii_lowercase();
         let value = value.trim();
         let known = match (section.as_str(), key.as_str()) {
-            ("", "hold_to_group_ms") => set_u64(&mut settings.hold_to_group_ms, value, 0, 5_000),
             ("", "middle_click_closes") => set_bool(&mut settings.middle_click_closes, value),
             ("", "cycle_hotkeys") => set_bool(&mut settings.cycle_hotkeys, value),
             ("", "maximized") => set_maximized(&mut settings.maximized, value),
@@ -206,19 +326,15 @@ pub fn parse(text: &str) -> Loaded {
                 }
                 known
             }
-            ("bar", "height") => set_i32(&mut settings.metrics.height, value, 16, 96),
-            ("bar", "top_gap") => set_i32(&mut settings.metrics.top_gap, value, 0, 32),
-            ("bar", "inset") => set_i32(&mut settings.metrics.inset, value, 0, 64),
-            ("bar", "tab_min") => set_i32(&mut settings.metrics.tab_min, value, 32, 400),
-            ("bar", "tab_max") => set_i32(&mut settings.metrics.tab_max, value, 32, 800),
-            ("bar", "spacing") => set_i32(&mut settings.metrics.spacing, value, 0, 16),
-            ("bar", "padding") => set_i32(&mut settings.metrics.padding, value, 0, 32),
-            ("bar", "icon") => set_i32(&mut settings.metrics.icon, value, 8, 64),
-            ("bar", "close") => set_i32(&mut settings.metrics.close, value, 8, 64),
-            ("bar", "caption_reserve") => {
-                set_i32(&mut settings.metrics.caption_reserve, value, 0, 600)
+            (section, key) if let Some(field) = Field::find(section, key) => {
+                match value.parse::<i64>() {
+                    Ok(parsed) => {
+                        field.store(&mut settings, parsed);
+                        true
+                    }
+                    Err(_) => false,
+                }
             }
-            ("bar", "corner") => set_i32(&mut settings.metrics.corner, value, 0, 32),
             _ => {
                 let where_ = if section.is_empty() {
                     String::new()
@@ -244,27 +360,6 @@ pub fn parse(text: &str) -> Loaded {
         settings.metrics.tab_max = settings.metrics.tab_min;
     }
     Loaded { settings, warnings }
-}
-
-/// Stores a parsed integer, clamped to `[min, max]`. Returns false when `value` is not an integer.
-fn set_i32(target: &mut i32, value: &str, min: i32, max: i32) -> bool {
-    match value.parse::<i32>() {
-        Ok(parsed) => {
-            *target = parsed.clamp(min, max);
-            true
-        }
-        Err(_) => false,
-    }
-}
-
-fn set_u64(target: &mut u64, value: &str, min: u64, max: u64) -> bool {
-    match value.parse::<u64>() {
-        Ok(parsed) => {
-            *target = parsed.clamp(min, max);
-            true
-        }
-        Err(_) => false,
-    }
 }
 
 /// Stores a mode name, quoted or not. Returns false when it isn't one.
@@ -396,6 +491,36 @@ mod tests {
         let shown = parse("hide_when_maximized = false\n");
         assert_eq!(shown.settings.maximized, MaximizedBar::Always);
         assert!(shown.warnings.is_empty(), "{:?}", shown.warnings);
+    }
+
+    #[test]
+    fn fields_read_and_write_the_settings_they_name() {
+        let mut s = Settings::default();
+        for (i, field) in std::iter::once(Field::HoldToGroup)
+            .chain(Field::BAR)
+            .enumerate()
+        {
+            let (min, max) = field.range();
+            let value = (min + 1 + i as i32).min(max);
+            field.set(&mut s, value);
+            assert_eq!(field.get(&s), value, "{field:?}");
+            assert_eq!(Field::find(field.section(), field.key()), Some(field));
+        }
+        Field::Height.set(&mut s, 1_000);
+        assert_eq!(s.metrics.height, 96);
+        Field::HoldToGroup.set(&mut s, -5);
+        assert_eq!(s.hold_to_group_ms, 0);
+    }
+
+    #[test]
+    fn tab_limits_push_each_other_instead_of_crossing() {
+        let mut s = Settings::default();
+        Field::TabMin.set(&mut s, 300);
+        assert_eq!((s.metrics.tab_min, s.metrics.tab_max), (300, 300));
+        Field::TabMax.set(&mut s, 100);
+        assert_eq!((s.metrics.tab_min, s.metrics.tab_max), (100, 100));
+        Field::TabMax.set(&mut s, 500);
+        assert_eq!((s.metrics.tab_min, s.metrics.tab_max), (100, 500));
     }
 
     /// A fresh, legal-on-Windows directory name for the two filesystem tests.
