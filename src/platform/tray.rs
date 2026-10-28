@@ -4,7 +4,7 @@
 use std::mem::size_of;
 use std::path::PathBuf;
 
-use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, WPARAM};
 use windows::Win32::UI::Shell::{
     NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIM_ADD, NIM_DELETE, NIM_MODIFY,
     NOTIFYICONDATAW, Shell_NotifyIconW,
@@ -52,14 +52,14 @@ fn fill(field: &mut [u16], text: &str) {
 impl Tray {
     /// Adds the icon. Failure is tolerated: Explorer may not be running yet, and the icon is
     /// re-added when the taskbar announces itself.
-    pub fn add(owner: HWND, callback_message: u32, tooltip: &str) -> Self {
+    pub fn add(owner: HWND, instance: HINSTANCE, callback_message: u32, tooltip: &str) -> Self {
         let mut data = NOTIFYICONDATAW {
             cbSize: size_of::<NOTIFYICONDATAW>() as u32,
             hWnd: owner,
             uID: 1,
             uFlags: NIF_ICON | NIF_MESSAGE | NIF_TIP,
             uCallbackMessage: callback_message,
-            hIcon: unsafe { LoadIconW(None, IDI_APPLICATION) }.unwrap_or_default(),
+            hIcon: app_icon(instance),
             ..Default::default()
         };
         fill(&mut data.szTip, tooltip);
@@ -88,6 +88,29 @@ impl Tray {
         fill(&mut data.szInfo, text);
         let _ = unsafe { Shell_NotifyIconW(NIM_MODIFY, &data) };
     }
+}
+
+/// Grouply's icon, embedded by `build.rs` as resource 1.
+const APP_ICON: PCWSTR = PCWSTR(1 as _);
+
+/// The app icon at the notification area's size, or the stock application icon if the executable
+/// has none.
+fn app_icon(instance: HINSTANCE) -> HICON {
+    let (cx, cy) = unsafe { (GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON)) };
+    let image = unsafe {
+        LoadImageW(
+            Some(instance),
+            APP_ICON,
+            IMAGE_ICON,
+            cx,
+            cy,
+            LR_DEFAULTCOLOR,
+        )
+    };
+    image
+        .map(|image| HICON(image.0))
+        .or_else(|_| unsafe { LoadIconW(None, IDI_APPLICATION) })
+        .unwrap_or_default()
 }
 
 impl Drop for Tray {
