@@ -19,7 +19,7 @@ use crate::drag::{DropTracker, SizeWatch};
 use crate::handoff::SavedGroup;
 use crate::layout::{self, Rect};
 use crate::model::{GroupId, Groups, Removed};
-use crate::settings::Settings;
+use crate::settings::{MaximizedBar, Settings};
 
 pub const TIMER_DRAG: usize = 1;
 const DRAG_POLL_MS: u32 = 50;
@@ -141,9 +141,10 @@ impl App {
         }
     }
 
-    /// Reveals and hides bars that auto-hide on maximized and top-snapped windows.
+    /// Expands bars on maximized and top-snapped windows while the pointer is at the top edge,
+    /// and tucks or hides them again when it leaves.
     pub fn on_hover_tick(&mut self) {
-        if !self.settings.hide_when_maximized {
+        if self.settings.maximized == MaximizedBar::Always {
             return;
         }
         let (x, y) = win::cursor_pos();
@@ -159,17 +160,13 @@ impl App {
             if !layout::bar_overlays(frame, work, &metrics) {
                 continue;
             }
-            let Some(visible) = self.bars.get(&id).map(TabBar::is_visible) else {
+            let Some(bar) = self.bars.get(&id) else {
                 continue;
             };
             let revealed = layout::in_reveal_band(work, &metrics, x, y);
-            if revealed && !visible {
+            // A bar stays as it is while one of its tabs is pressed.
+            if revealed != bar.is_expanded() && !bar.is_pressed() {
                 self.place_bar(id);
-            } else if !revealed
-                && visible
-                && let Some(bar) = self.bars.get(&id)
-            {
-                bar.hide();
             }
         }
     }
@@ -559,11 +556,19 @@ impl App {
         let work = win::work_area(active);
         let dpi = win::dpi(active);
         let metrics = self.settings.metrics.scaled(dpi);
-        if self.settings.hide_when_maximized && layout::bar_overlays(frame, work, &metrics) {
+        let mut tucked = false;
+        // Collapsing mid-press would pull the tab out from under a reorder or detach drag.
+        if self.settings.maximized != MaximizedBar::Always
+            && layout::bar_overlays(frame, work, &metrics)
+            && !bar.is_pressed()
+        {
             let (x, y) = win::cursor_pos();
             if !layout::in_reveal_band(work, &metrics, x, y) {
-                bar.hide();
-                return;
+                if self.settings.maximized == MaximizedBar::Hidden {
+                    bar.hide();
+                    return;
+                }
+                tucked = true;
             }
         }
         let z = match win::above(active) {
@@ -572,7 +577,7 @@ impl App {
             Some(w) if !win::is_topmost(w) => ZOrder::After(w),
             _ => ZOrder::TopNormal,
         };
-        bar.place(frame, work, dpi, z);
+        bar.place(frame, work, dpi, z, tucked);
     }
 
     /// The current groups, for the next instance to adopt after an update.

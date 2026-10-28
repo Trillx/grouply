@@ -47,6 +47,8 @@ struct Palette {
     text: COLORREF,
     glyph_hover: COLORREF,
     accent: COLORREF,
+    /// Inactive tabs while the bar is tucked; the active one uses `accent`.
+    sliver: COLORREF,
 }
 
 const LIGHT: Palette = Palette {
@@ -56,6 +58,7 @@ const LIGHT: Palette = Palette {
     text: rgb(0x1A, 0x1A, 0x1A),
     glyph_hover: rgb(0xD0, 0xD0, 0xD0),
     accent: rgb(0x05, 0x96, 0x69),
+    sliver: rgb(0xBD, 0xBD, 0xBD),
 };
 
 const DARK: Palette = Palette {
@@ -65,6 +68,7 @@ const DARK: Palette = Palette {
     text: rgb(0xF2, 0xF2, 0xF2),
     glyph_hover: rgb(0x55, 0x55, 0x55),
     accent: rgb(0x10, 0xB9, 0x81),
+    sliver: rgb(0x5C, 0x5C, 0x5C),
 };
 
 pub struct TabView {
@@ -102,6 +106,8 @@ struct State {
     active: usize,
     geoms: Vec<TabGeom>,
     width: i32,
+    /// Showing only a sliver of each tab along the top edge of a maximized window.
+    tucked: bool,
     hover: Hit,
     tracking: bool,
     press: Option<Press>,
@@ -171,6 +177,7 @@ impl TabBar {
             active: 0,
             geoms: Vec::new(),
             width: 0,
+            tucked: false,
             hover: Hit::None,
             tracking: false,
             press: None,
@@ -231,12 +238,19 @@ impl TabBar {
         self.invalidate();
     }
 
-    pub fn is_visible(&self) -> bool {
-        win::is_visible(Win::from(self.hwnd))
+    /// Whether the whole bar is showing, as opposed to hidden or tucked.
+    pub fn is_expanded(&self) -> bool {
+        win::is_visible(Win::from(self.hwnd)) && !self.state.borrow().tucked
     }
 
-    /// Positions the bar for an active window with visible bounds `frame` and shows it.
-    pub fn place(&self, frame: Rect, work_area: Rect, dpi: u32, z: ZOrder) {
+    /// Whether a tab is being pressed or dragged, so the bar must stay as it is.
+    pub fn is_pressed(&self) -> bool {
+        self.state.borrow().press.is_some()
+    }
+
+    /// Positions the bar for an active window with visible bounds `frame` and shows it, either
+    /// whole or `tucked` to a sliver of each tab along the top of the work area.
+    pub fn place(&self, frame: Rect, work_area: Rect, dpi: u32, z: ZOrder, tucked: bool) {
         let rect = {
             let mut st = self.state.borrow_mut();
             if st.dpi != dpi {
@@ -249,11 +263,32 @@ impl TabBar {
                     }
                 }
             }
-            let rect = layout::bar_rect(frame, work_area, &st.metrics);
+            let rect = if tucked {
+                layout::tucked_rect(frame, work_area, &st.metrics)
+            } else {
+                layout::bar_rect(frame, work_area, &st.metrics)
+            };
             st.width = rect.width();
+            st.tucked = tucked;
+            if tucked {
+                st.hover = Hit::None;
+            }
             st.relayout();
             rect
         };
+        // Slivers are only a hint: clicks go through to the window underneath.
+        unsafe {
+            let ex = GetWindowLongPtrW(self.hwnd, GWL_EXSTYLE);
+            let transparent = WS_EX_TRANSPARENT.0 as isize;
+            let want = if tucked {
+                ex | transparent
+            } else {
+                ex & !transparent
+            };
+            if want != ex {
+                SetWindowLongPtrW(self.hwnd, GWL_EXSTYLE, want);
+            }
+        }
         let mut flags = SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOOWNERZORDER;
         let after = match z {
             ZOrder::Keep => {
@@ -598,51 +633,58 @@ unsafe fn draw(hwnd: HWND, hdc: HDC, st: &State) {
         SetBkMode(mem, TRANSPARENT);
         let p = st.palette;
         let m = &st.metrics;
-        for (i, (tab, g)) in st.tabs.iter().zip(&st.geoms).enumerate() {
-            let active = i == st.active;
-            let hovered = matches!(st.hover, Hit::Tab(j) | Hit::Close(j) if j == i);
-            let color = if active {
-                p.active
-            } else if hovered {
-                p.hover
-            } else {
-                p.inactive
-            };
-            tab_shape(mem, g.tab, m.corner, color);
-            if active {
-                let stripe = (m.height / 16).max(2);
-                let r = Rect::new(
-                    g.tab.left + m.corner / 2,
-                    g.tab.top,
-                    g.tab.right - m.corner / 2,
-                    g.tab.top + stripe,
-                );
-                fill(mem, to_win_rect(r), p.accent);
+        if st.tucked {
+            for (i, g) in st.geoms.iter().enumerate() {
+                let color = if i == st.active { p.accent } else { p.sliver };
+                sliver_shape(mem, g.tab, h, m.corner, color);
             }
-            if !tab.icon.is_invalid() {
-                let _ = DrawIconEx(
+        } else {
+            for (i, (tab, g)) in st.tabs.iter().zip(&st.geoms).enumerate() {
+                let active = i == st.active;
+                let hovered = matches!(st.hover, Hit::Tab(j) | Hit::Close(j) if j == i);
+                let color = if active {
+                    p.active
+                } else if hovered {
+                    p.hover
+                } else {
+                    p.inactive
+                };
+                tab_shape(mem, g.tab, m.corner, color);
+                if active {
+                    let stripe = (m.height / 16).max(2);
+                    let r = Rect::new(
+                        g.tab.left + m.corner / 2,
+                        g.tab.top,
+                        g.tab.right - m.corner / 2,
+                        g.tab.top + stripe,
+                    );
+                    fill(mem, to_win_rect(r), p.accent);
+                }
+                if !tab.icon.is_invalid() {
+                    let _ = DrawIconEx(
+                        mem,
+                        g.icon.left,
+                        g.icon.top,
+                        tab.icon,
+                        g.icon.width(),
+                        g.icon.height(),
+                        0,
+                        None,
+                        DI_NORMAL,
+                    );
+                }
+                SetTextColor(mem, p.text);
+                let mut text: Vec<u16> = tab.title.encode_utf16().collect();
+                let mut r = to_win_rect(g.text);
+                DrawTextW(
                     mem,
-                    g.icon.left,
-                    g.icon.top,
-                    tab.icon,
-                    g.icon.width(),
-                    g.icon.height(),
-                    0,
-                    None,
-                    DI_NORMAL,
+                    &mut text,
+                    &mut r,
+                    DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX | DT_LEFT,
                 );
-            }
-            SetTextColor(mem, p.text);
-            let mut text: Vec<u16> = tab.title.encode_utf16().collect();
-            let mut r = to_win_rect(g.text);
-            DrawTextW(
-                mem,
-                &mut text,
-                &mut r,
-                DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX | DT_LEFT,
-            );
-            if active || hovered {
-                close_glyph(mem, g.close, st.hover == Hit::Close(i), &p, m);
+                if active || hovered {
+                    close_glyph(mem, g.close, st.hover == Hit::Close(i), &p, m);
+                }
             }
         }
 
@@ -678,6 +720,23 @@ unsafe fn tab_shape(hdc: HDC, r: Rect, corner: i32, color: COLORREF) {
             corner,
             corner,
         );
+        SelectObject(hdc, old_brush);
+        SelectObject(hdc, old_pen);
+        let _ = DeleteObject(brush.into());
+        let _ = DeleteObject(pen.into());
+    }
+}
+
+/// The bottom `height` pixels of a tab's span, with rounded lower corners.
+unsafe fn sliver_shape(hdc: HDC, tab: Rect, height: i32, corner: i32, color: COLORREF) {
+    unsafe {
+        let brush = CreateSolidBrush(color);
+        let pen = CreatePen(PS_SOLID, 1, color);
+        let old_brush = SelectObject(hdc, brush.into());
+        let old_pen = SelectObject(hdc, pen.into());
+        let round = corner.min(height);
+        // Starting above the bitmap clips the upper corners, leaving them square.
+        let _ = RoundRect(hdc, tab.left, -height, tab.right, height, round, round);
         SelectObject(hdc, old_brush);
         SelectObject(hdc, old_pen);
         let _ = DeleteObject(brush.into());

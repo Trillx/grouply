@@ -41,8 +41,10 @@ The first start writes `%APPDATA%\Grouply\settings.toml`. Edit it with any text 
 hold_to_group_ms = 350
 middle_click_closes = true
 cycle_hotkeys = true
-# Hide the bar on maximized windows until the pointer touches the top edge.
-hide_when_maximized = false
+# Tabs on maximized windows: "always" shows the whole bar, "tucked" leaves
+# a sliver of each tab at the top edge, "hidden" shows nothing. Touching the
+# top edge shows the whole bar.
+maximized = "tucked"
 
 # Bar dimensions in pixels at 96 DPI; scaled on other displays.
 [bar]
@@ -104,7 +106,7 @@ The platform-independent core tests run anywhere: `cargo test`.
 ## Known limitations
 
 - Windows of elevated apps can't be grouped unless Grouply itself runs elevated.
-- On maximized windows the bar overlays the top of the window instead of hiding, unless `hide_when_maximized` is on; the reveal is polled every 100 ms rather than driven by a top-edge hook.
+- On maximized windows the whole bar covers the top of the window, so by default it stays tucked to a sliver until the pointer touches the top edge. That reveal is polled every 100 ms rather than driven by a top-edge hook.
 - Settings are file-only: there is no settings window, and some changes (like `cycle_hotkeys`) take effect after *Reload settings*, not while you edit the file.
 - *Start with Windows* writes the standard per-user `Run` entry. It won't start Grouply elevated, and it points at wherever the exe lives now, so move the exe before enabling it.
 - Tabs are drawn beside the title bar, not inside it. Integrating them into the title bar needs in-process code (see `docs/design.md`).
