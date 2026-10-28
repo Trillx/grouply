@@ -1,0 +1,506 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<title>PROTOTYPE: Grouply settings window</title>
+<!--
+  PROTOTYPE, throwaway. Question: what should a Grouply settings window with live previews look like?
+  Three structurally different variants of one window, switchable with ?variant=A|B|C, the bottom bar,
+  or the left/right arrow keys. All variants share one settings state, so values carry across.
+  The settings.toml the window would write is shown under it and updates live.
+  The tab preview reproduces layout::layout_tabs, layout::bar_rect and tabbar::draw at 96 DPI;
+  limits come from settings::parse.
+
+  Verdict (2026-10-28): C, presets and dials. The user found it the cleanest. Open points for the real
+  window: where the seven bar sizes without a dial live, and keyboard/typed input on the dials.
+-->
+<style>
+body { margin: 0; padding-bottom: 64px; font: 13px var(--font-sans, "Segoe UI", system-ui, sans-serif); }
+.standalone body { background: #111; color: #e8e8e8; max-width: 728px; margin: 24px auto; }
+* { box-sizing: border-box; }
+button { font: inherit; color: inherit; }
+.muted { color: var(--muted-foreground, #9a9a9a); }
+.sp { flex: 1; }
+.win { border: 1px solid var(--border, #333); border-radius: var(--radius, 10px); background: var(--card, #1b1b1b); padding: 16px; }
+.wt { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.wt img { width: 20px; height: 20px; }
+.wt b { font-size: 14px; }
+h3 { font-size: 13px; font-weight: 600; margin: 18px 0 8px; }
+.hint { margin: -4px 0 10px; color: var(--muted-foreground, #9a9a9a); }
+
+/* Shared controls */
+.row { display: flex; align-items: center; gap: 14px; padding: 10px 14px; border-radius: 6px; margin-bottom: 3px;
+  background: color-mix(in srgb, var(--foreground, #fff) 4%, transparent); }
+.lbl { flex: 1; min-width: 0; } .lbl b { display: block; font-weight: 500; } .lbl small { color: var(--muted-foreground, #9a9a9a); font-size: 12px; }
+.val { font: 12px var(--font-mono, ui-monospace, monospace); min-width: 64px; text-align: right; color: var(--muted-foreground, #9a9a9a); }
+input[type=range] { -webkit-appearance: none; appearance: none; width: 180px; height: 4px; border-radius: 2px; margin: 0;
+  background: linear-gradient(to right, #10B981 var(--p, 0%), color-mix(in srgb, var(--foreground, #fff) 18%, transparent) var(--p, 0%)); }
+input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%; background: #10B981; border: 3px solid var(--card, #1b1b1b); box-shadow: 0 0 0 1px #10B981; cursor: grab; }
+input[type=range]::-moz-range-thumb { width: 10px; height: 10px; border-radius: 50%; background: #10B981; border: 3px solid var(--card, #1b1b1b); box-shadow: 0 0 0 1px #10B981; }
+.dual { position: relative; width: 180px; height: 16px; }
+.dual input { position: absolute; left: 0; top: 6px; width: 100%; pointer-events: none; background: transparent; }
+.dual input::-webkit-slider-thumb { pointer-events: auto; }
+.dual input::-moz-range-thumb { pointer-events: auto; }
+.dual .trk { position: absolute; left: 0; right: 0; top: 6px; height: 4px; border-radius: 2px; background: color-mix(in srgb, var(--foreground, #fff) 18%, transparent); }
+.dual .fil { position: absolute; top: 6px; height: 4px; background: #10B981; }
+.sw { width: 40px; height: 20px; border-radius: 10px; border: 1px solid var(--muted-foreground, #888); background: transparent; position: relative; cursor: pointer; flex: none; padding: 0; }
+.sw::after { content: ""; position: absolute; left: 3px; top: 3px; width: 12px; height: 12px; border-radius: 50%; background: var(--muted-foreground, #aaa); transition: left .12s; }
+.sw[aria-checked=true] { background: #10B981; border-color: #10B981; }
+.sw[aria-checked=true]::after { left: 23px; background: #fff; }
+.seg { display: inline-flex; border: 1px solid var(--border, #333); border-radius: 6px; overflow: hidden; flex: none; }
+.seg button { border: 0; background: transparent; padding: 5px 10px; cursor: pointer; font-size: 12px; }
+.seg button + button { border-left: 1px solid var(--border, #333); }
+.seg button[aria-pressed=true] { background: #10B981; color: #fff; }
+.btn { border: 1px solid var(--border, #333); background: transparent; border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+.btn:hover { background: color-mix(in srgb, var(--foreground, #fff) 6%, transparent); }
+.step { display: inline-flex; align-items: center; gap: 6px; }
+.step button { width: 22px; height: 22px; border-radius: 5px; border: 1px solid var(--border, #333); background: transparent; cursor: pointer; line-height: 1; padding: 0; }
+.step b { font: 12px var(--font-mono, monospace); min-width: 30px; text-align: center; }
+
+/* Preview scenes */
+.pv { border: 1px solid var(--border, #333); border-radius: 8px; padding: 10px; }
+.pvbar { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; font-size: 12px; }
+.scene { position: relative; overflow: hidden; border-radius: 6px; font: 12px "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; }
+.scene + .scene { margin-top: 8px; }
+.desk { position: absolute; inset: 0; }
+.aw { position: absolute; overflow: hidden; box-shadow: 0 4px 18px rgba(0,0,0,.35), 0 0 0 1px rgba(0,0,0,.25); }
+.awt { height: 32px; display: flex; align-items: center; }
+.ai { width: 16px; height: 16px; margin: 0 12px; display: inline-flex; flex: none; } .ai svg, .ti svg { width: 100%; height: 100%; }
+.atl { white-space: nowrap; }
+.caps { margin-left: auto; display: flex; } .caps span { width: 46px; height: 32px; display: grid; place-items: center; } .caps svg { width: 10px; height: 10px; }
+.awm { height: 28px; display: flex; align-items: center; gap: 18px; padding-left: 14px; }
+.awc { padding: 8px 14px; font: 13px/1.5 Consolas, ui-monospace, monospace; opacity: .8; }
+.barpos { position: absolute; }
+.bar { position: relative; }
+.tb { position: absolute; overflow: hidden; }
+.tb .stripe { position: absolute; top: 0; }
+.ti { position: absolute; display: inline-flex; }
+.tt { position: absolute; top: 0; bottom: 0; display: flex; align-items: center; white-space: nowrap; overflow: hidden; }
+.tt span { overflow: hidden; text-overflow: ellipsis; }
+.tx { position: absolute; display: grid; place-items: center; }
+.full { position: absolute; z-index: 6; transition: transform .16s ease, opacity .16s; }
+.full.hid { transform: translateY(-100%); opacity: 0; pointer-events: none; }
+.scene:has(.zone:hover) .full.hid, .scene:has(.full.hid:hover) .full.hid { transform: none; opacity: 1; pointer-events: auto; }
+.scene:has(.zone:hover) .rest, .scene:has(.full:hover) .rest { opacity: 0; }
+.zone { position: absolute; left: 0; right: 0; top: 0; height: 8px; z-index: 5; }
+.rest { position: absolute; z-index: 4; transition: opacity .12s; }
+.rest b { position: absolute; top: 0; height: 5px; border-radius: 0 0 3px 3px; }
+.cap { font-size: 11px; color: var(--muted-foreground, #9a9a9a); margin-top: 4px; }
+
+/* Hold-to-group test */
+.hold { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--border, #333); background: transparent; border-radius: 99px; padding: 4px 12px 4px 6px; cursor: pointer; user-select: none; touch-action: none; }
+.hold svg { width: 22px; height: 22px; transform: rotate(-90deg); }
+.hold .trk2 { fill: none; stroke: color-mix(in srgb, var(--foreground, #fff) 18%, transparent); stroke-width: 3; }
+.hold .arc { fill: none; stroke: #10B981; stroke-width: 3; stroke-linecap: round; stroke-dasharray: 56.55; stroke-dashoffset: 56.55; }
+.hold.ok { border-color: #10B981; }
+.hold.early { border-color: #f59e0b; }
+
+/* Variant A */
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; }
+.grid2 .row { flex-wrap: wrap; gap: 6px 10px; padding: 8px 12px; margin: 0; }
+.grid2 .row .lbl { flex-basis: 100%; }
+.grid2 input[type=range] { flex: 1; width: auto; }
+.grid2 .val { min-width: 44px; }
+.foot { display: flex; gap: 8px; margin-top: 14px; }
+
+/* Variant B */
+.stage { position: relative; height: 225px; overflow: hidden; border-radius: 8px; border: 1px solid var(--border, #333); }
+.stage-inner { position: absolute; left: 0; top: 0; transform-origin: 0 0; font: 12px "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; }
+.hd { position: absolute; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; background: #10B981; border: 2px solid #fff;
+  box-shadow: 0 0 0 1px rgba(0,0,0,.4), 0 2px 6px rgba(0,0,0,.4); cursor: grab; z-index: 10; touch-action: none; }
+.hd.ns { cursor: ns-resize; } .hd.ew { cursor: ew-resize; } .hd.nwse { cursor: nwse-resize; }
+.hd .hl { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); white-space: nowrap; background: #0b0b0b; color: #fff;
+  font: 11px var(--font-sans, system-ui); padding: 3px 7px; border-radius: 5px; opacity: 0; pointer-events: none; transition: opacity .1s; }
+.hd:hover .hl, .hd.drag .hl { opacity: 1; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 4px; }
+.chip { border: 1px solid var(--border, #333); border-radius: 99px; padding: 3px 10px; font-size: 12px; }
+.chip b { font-family: var(--font-mono, monospace); font-weight: 500; color: #10B981; margin-left: 4px; }
+.others { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px 14px; margin-top: 6px; }
+.others > div { display: flex; align-items: center; justify-content: space-between; gap: 6px; font-size: 12px; }
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.mp { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.mpc { border: 1px solid var(--border, #333); background: transparent; border-radius: 8px; padding: 6px; cursor: pointer; text-align: left; }
+.mpc[aria-pressed=true] { border-color: #10B981; box-shadow: 0 0 0 1px #10B981; }
+.mpc span { display: block; font-size: 12px; margin-top: 4px; }
+.mini { position: relative; height: 34px; overflow: hidden; border-radius: 4px; }
+.checks { display: flex; flex-direction: column; gap: 8px; }
+.checks label { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+
+/* Variant C */
+.presets { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+.pc { border: 1px solid var(--border, #333); background: transparent; border-radius: 8px; padding: 6px; cursor: pointer; text-align: left; }
+.pc[aria-pressed=true] { border-color: #10B981; box-shadow: 0 0 0 1px #10B981; }
+.pc .mini { height: 48px; }
+.pc span { display: block; font-size: 12px; margin-top: 4px; }
+.knobs { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+.knob { display: flex; flex-direction: column; align-items: center; gap: 2px; user-select: none; }
+.kw { position: relative; width: 72px; height: 72px; cursor: ns-resize; touch-action: none; }
+.kw svg { width: 100%; height: 100%; }
+.kt { fill: none; stroke: color-mix(in srgb, var(--foreground, #fff) 14%, transparent); stroke-width: 6; stroke-linecap: round; }
+.kv { fill: none; stroke: #10B981; stroke-width: 6; stroke-linecap: round; }
+.kb { fill: color-mix(in srgb, var(--foreground, #fff) 7%, transparent); }
+.kd { fill: var(--foreground, #fff); }
+.kw b { position: absolute; inset: 0; display: grid; place-items: center; font: 600 13px var(--font-mono, monospace); }
+.knob span { font-size: 12px; } .knob small { font-size: 11px; color: var(--muted-foreground, #9a9a9a); }
+.tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.tile { border: 1px solid var(--border, #333); background: transparent; border-radius: 8px; padding: 10px 12px; cursor: pointer; text-align: left; display: flex; flex-direction: column; gap: 4px; }
+.tile[aria-checked=true] { border-color: #10B981; background: color-mix(in srgb, #10B981 12%, transparent); }
+.tile i { font-style: normal; font-size: 11px; color: var(--muted-foreground, #9a9a9a); }
+.tile[aria-checked=true] i { color: #10B981; }
+
+/* Live settings.toml */
+.toml { margin-top: 10px; border: 1px solid var(--border, #333); border-radius: var(--radius, 10px); background: var(--code-background, #151515); padding: 12px 16px; }
+.toml-h { display: flex; align-items: center; gap: 8px; font-size: 12px; margin-bottom: 6px; }
+.toml pre { margin: 0; font: 12px/1.55 var(--font-mono, ui-monospace, monospace); max-height: 230px; overflow: auto; }
+.toml .c { color: var(--muted-foreground, #8a8a8a); }
+.toml .chg { color: #10B981; }
+.toml .chg::after { content: "  ← changed"; color: var(--muted-foreground, #8a8a8a); }
+.flash { animation: flash .6s; } @keyframes flash { from { background: color-mix(in srgb, #10B981 25%, transparent); } }
+
+/* Prototype switcher */
+.switcher { position: fixed; left: 50%; bottom: 12px; transform: translateX(-50%); z-index: 100; display: flex; align-items: center; gap: 4px;
+  background: #fafafa; color: #111; border-radius: 99px; padding: 4px; box-shadow: 0 4px 16px rgba(0,0,0,.5); font: 12px system-ui, sans-serif; }
+.switcher button { border: 0; background: transparent; width: 28px; height: 28px; border-radius: 50%; cursor: pointer; font-size: 15px; color: #111; }
+.switcher button:hover { background: #e5e5e5; }
+.switcher span { padding: 0 8px; min-width: 190px; text-align: center; } .switcher span b { font-weight: 700; }
+</style></head>
+<body>
+<div id="variants"></div>
+<div class="toml" id="toml"><div class="toml-h"><b>settings.toml</b><span class="muted">what the window would write, as you change things</span></div><pre id="tomlText"></pre></div>
+<div class="switcher"><button data-go="-1" aria-label="Previous variant">‹</button><span id="vlabel"></span><button data-go="1" aria-label="Next variant">›</button></div>
+<script>
+if (!getComputedStyle(document.documentElement).getPropertyValue('--background').trim()) document.documentElement.classList.add('standalone');
+
+// ---- Settings state (defaults and limits from settings.rs) ----
+const DEF = { hold: 350, middle: true, cycle: true, autostart: false, maximized: 'always',
+  m: { height: 32, top_gap: 4, inset: 8, tab_min: 72, tab_max: 220, spacing: 2, padding: 8, icon: 16, close: 16, caption_reserve: 150, corner: 8 } };
+const LIM = { height: [16, 96], top_gap: [0, 32], inset: [0, 64], tab_min: [32, 400], tab_max: [32, 800], spacing: [0, 16], padding: [0, 32],
+  icon: [8, 64], close: [8, 64], caption_reserve: [0, 600], corner: [0, 32], hold: [0, 5000] };
+const NAME = { height: 'Height', top_gap: 'Space above tabs', inset: 'Left inset', tab_min: 'Narrowest tab', tab_max: 'Widest tab', spacing: 'Gap between tabs',
+  padding: 'Padding inside tabs', icon: 'Icon size', close: 'Close button', caption_reserve: 'Room for caption buttons', corner: 'Roundness', hold: 'Hold to group' };
+const S = JSON.parse(JSON.stringify(DEF));
+let theme = 'dark', nTabs = 3;
+const get = k => k === 'hold' ? S.hold : S.m[k];
+function setVal(k, v) {
+  v = Math.round(v);
+  const [lo, hi] = LIM[k];
+  v = Math.min(Math.max(v, lo), hi);
+  if (k === 'hold') S.hold = v; else S.m[k] = v;
+  // settings::parse raises tab_max to tab_min; the UI also lets a lowered maximum push the minimum down.
+  if (k === 'tab_min' && S.m.tab_max < v) S.m.tab_max = v;
+  if (k === 'tab_max' && S.m.tab_min > v) S.m.tab_min = Math.max(v, LIM.tab_min[0]);
+  render();
+}
+
+// ---- Tab bar model (ported from layout.rs and tabbar.rs) ----
+const PAL = {
+  light: { active: '#FFFFFF', inactive: '#E3E3E3', text: '#1A1A1A', accent: '#059669', glyph: '#444', title: '#F3F3F3', client: '#FFFFFF', ink: '#1A1A1A',
+    menu: '#FAFAFA', line: '#E5E5E5', sliver: '#BDBDBD', desk: 'linear-gradient(135deg,#C9D8EE,#9DB6DE)' },
+  dark: { active: '#3A3A3A', inactive: '#1F1F1F', text: '#F2F2F2', accent: '#10B981', glyph: '#CCC', title: '#202020', client: '#191919', ink: '#EDEDED',
+    menu: '#232323', line: '#333', sliver: '#5C5C5C', desk: 'linear-gradient(135deg,#22324d,#0f1626)' } };
+const IC = {
+  notepad: '<svg viewBox="0 0 16 16"><rect x="3" y="1.5" width="10" height="13" rx="1.5" fill="#fff" stroke="#3B82F6"/><path d="M5.5 5h5M5.5 7.5h5M5.5 10h3" stroke="#3B82F6" stroke-linecap="round"/></svg>',
+  folder: '<svg viewBox="0 0 16 16"><path d="M1.5 4a1 1 0 0 1 1-1h3.5l1.5 1.5h6a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1z" fill="#E9A92B"/><path d="M1.5 6h13v6a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1z" fill="#FFCF5C"/></svg>',
+  term: '<svg viewBox="0 0 16 16"><rect x="1" y="2" width="14" height="12" rx="2" fill="#2B2B2B" stroke="#555" stroke-width=".6"/><path d="M4 6l2.5 2L4 10M8 10.5h4" stroke="#fff" stroke-width="1.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  paint: '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.5" fill="#F472B6"/><circle cx="6" cy="6" r="1.3" fill="#fff"/><circle cx="10" cy="6" r="1.3" fill="#FDE047"/><circle cx="6.5" cy="10.2" r="1.3" fill="#60A5FA"/></svg>',
+  calc: '<svg viewBox="0 0 16 16"><rect x="2.5" y="1.5" width="11" height="13" rx="2" fill="#475569"/><rect x="4.5" y="3.5" width="7" height="3" rx=".8" fill="#E2E8F0"/><path d="M5.2 9.2h.1M8 9.2h.1M10.8 9.2h.1M5.2 12h.1M8 12h.1M10.8 12h.1" stroke="#E2E8F0" stroke-width="1.6" stroke-linecap="round"/></svg>',
+  gear: '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.5" fill="#64748B"/><circle cx="8" cy="8" r="2.4" fill="none" stroke="#fff" stroke-width="1.5"/></svg>',
+  photo: '<svg viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="2" fill="#0EA5E9"/><path d="M2 12l4-4 3 3 2-2 3 3" fill="#BAE6FD"/><circle cx="11" cy="5.5" r="1.3" fill="#FDE047"/></svg>',
+  mail: '<svg viewBox="0 0 16 16"><rect x="1.5" y="3" width="13" height="10" rx="1.5" fill="#2563EB"/><path d="M2 4l6 5 6-5" fill="none" stroke="#fff" stroke-width="1.2"/></svg>' };
+const TABS = [['notepad', 'notes.txt – Notepad'], ['folder', 'Downloads – File Explorer'], ['term', 'Windows PowerShell'], ['paint', 'sketch.png – Paint'],
+  ['calc', 'Calculator'], ['gear', 'Settings'], ['photo', 'Photos'], ['mail', 'Inbox – Mail']];
+const GICON = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#10B981"/><stop offset="1" stop-color="#047857"/></linearGradient></defs><rect width="64" height="64" rx="14" fill="url(#g)"/><g fill="#fff" fill-opacity=".55"><path d="M28 21v-2.5a2.5 2.5 0 0 1 2.5-2.5h7a2.5 2.5 0 0 1 2.5 2.5V21z"/><path d="M44 21v-2.5a2.5 2.5 0 0 1 2.5-2.5h7a2.5 2.5 0 0 1 2.5 2.5V21z"/></g><path d="M8 19a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3v5h29a3 3 0 0 1 3 3v22a3 3 0 0 1-3 3H11a3 3 0 0 1-3-3z" fill="#fff"/><rect x="12" y="28" width="40" height="4" rx="2" fill="#A7F3D0"/></svg>');
+const idiv = (a, b) => Math.trunc(a / b);
+
+function layoutTabs(barW, n, m) {
+  const avail = Math.max(barW - m.spacing * (n - 1), 0);
+  const w = Math.min(Math.max(idiv(avail, n), m.tab_min), m.tab_max);
+  const top = m.top_gap, bottom = m.height, mid = idiv(top + bottom, 2);
+  return Array.from({ length: n }, (_, i) => {
+    const l = i * (w + m.spacing), r = l + w;
+    const icon = { l: l + m.padding, t: mid - idiv(m.icon, 2) };
+    const close = { l: r - m.padding - m.close, t: mid - idiv(m.close, 2) };
+    return { l, r, t: top, b: bottom, icon, close, textL: icon.l + m.icon + idiv(m.padding, 2), textR: close.l - idiv(m.padding, 2) };
+  });
+}
+function barHTML(m, barW, n, pal, cls = '') {
+  const tabs = TABS.slice(0, n), g = layoutTabs(barW, n, m);
+  const stripe = Math.max(idiv(m.height, 16), 2), r = m.corner / 2;
+  let h = `<div class="bar ${cls}" style="width:${barW}px;height:${m.height}px">`;
+  g.forEach((x, i) => {
+    if (x.l >= barW) return; // tabs past the right edge are clipped
+    const on = i === 0, w = Math.min(x.r, barW) - x.l, th = Math.max(0, x.b - x.t);
+    h += `<div class="tb" style="left:${x.l}px;top:${x.t}px;width:${w}px;height:${th}px;border-radius:${r}px ${r}px 0 0;background:${on ? pal.active : pal.inactive};color:${pal.text}">`;
+    if (on) h += `<i class="stripe" style="left:${m.corner / 2}px;right:${m.corner / 2}px;height:${stripe}px;background:${pal.accent}"></i>`;
+    h += `<span class="ti" style="left:${x.icon.l - x.l}px;top:${x.icon.t - x.t}px;width:${m.icon}px;height:${m.icon}px">${IC[tabs[i][0]]}</span>`;
+    if (x.textR - x.textL > 6) h += `<span class="tt" style="left:${x.textL - x.l}px;width:${x.textR - x.textL}px"><span>${tabs[i][1]}</span></span>`;
+    if (on) h += `<span class="tx" style="left:${x.close.l - x.l}px;top:${x.close.t - x.t}px;width:${m.close}px;height:${m.close}px"><svg viewBox="0 0 4 4" style="width:50%;height:50%"><path d="M0 0l4 4M4 0L0 4" stroke="${pal.glyph}" stroke-width=".45"/></svg></span>`;
+    h += '</div>';
+  });
+  return h + '</div>';
+}
+const CAPS = ink => `<span class="caps"><span><svg viewBox="0 0 10 10"><path d="M0 5h10" stroke="${ink}"/></svg></span><span><svg viewBox="0 0 10 10"><rect x=".5" y=".5" width="9" height="9" rx="1.5" fill="none" stroke="${ink}"/></svg></span><span><svg viewBox="0 0 10 10"><path d="M0 0l10 10M10 0L0 10" stroke="${ink}"/></svg></span></span>`;
+function appWin(pal, x, y, w, h, maximized) {
+  const rad = maximized ? 0 : 8;
+  return `<div class="aw" style="left:${x}px;top:${y}px;width:${w}px;height:${h}px;background:${pal.client};color:${pal.ink};border-radius:${rad}px ${rad}px 0 0${maximized ? ';box-shadow:none' : ''}">
+    <div class="awt" style="background:${pal.title}"><span class="ai">${IC.notepad}</span><span class="atl">notes.txt – Notepad</span>${CAPS(pal.ink)}</div>
+    <div class="awm" style="background:${pal.menu};border-bottom:1px solid ${pal.line}"><span>File</span><span>Edit</span><span>View</span></div>
+    <div class="awc">Groceries: oats, coffee, lemons</div></div>`;
+}
+// A normal window with its bar above it (bar_rect when the bar fits above the frame).
+function sceneNormal(el) {
+  const m = S.m, pal = PAL[theme], W = el.clientWidth || 640, H = 176, wl = 20, ww = W - 40, wt = 116;
+  el.style.height = H + 'px';
+  el.innerHTML = `<div class="desk" style="background:${pal.desk}"></div>${appWin(pal, wl, wt, ww, 90)}
+    <div class="barpos" style="left:${wl + m.inset}px;top:${wt - m.height}px">${barHTML(m, Math.max(ww - 2 * m.inset, 0), nTabs, pal)}</div>`;
+}
+// A maximized window: the bar overlays the caption and keeps clear of the caption buttons.
+function fullBar(m, pal, W, n, hidden) {
+  const barW = Math.max(W - 2 * m.inset - m.caption_reserve, 0);
+  return `<div class="full ${hidden ? 'hid' : ''}" style="left:${m.inset}px;top:0">${barHTML(m, barW, n, pal)}</div>`;
+}
+// Tucked tabs: a 5 px sliver of each tab where the tab would be, the active one in the accent colour.
+function slivers(m, pal, W, n) {
+  const barW = Math.max(W - 2 * m.inset - m.caption_reserve, 0);
+  return `<div class="rest" style="left:${m.inset}px;top:0">` + layoutTabs(barW, n, m).filter(x => x.l < barW)
+    .map((x, i) => `<b style="left:${x.l}px;width:${Math.min(x.r, barW) - x.l}px;background:${i === 0 ? pal.accent : pal.sliver}"></b>`).join('') + '</div>';
+}
+function maxLayers(m, pal, W, mode, n) {
+  if (mode === 'always') return fullBar(m, pal, W, n, false);
+  return (mode === 'tucked' ? slivers(m, pal, W, n) : '') + fullBar(m, pal, W, n, true) + '<div class="zone"></div>';
+}
+function sceneMax(el) {
+  const pal = PAL[theme], W = el.clientWidth || 640;
+  el.style.height = '64px';
+  el.innerHTML = appWin(pal, 0, 0, W, 64, true) + maxLayers(S.m, pal, W, S.maximized, nTabs);
+}
+// A still picture of one maximized-window mode, for the pickers.
+function miniMax(el, mode) {
+  const pal = PAL[theme];
+  const layer = mode === 'always' ? fullBar(S.m, pal, 640, 3, false) : mode === 'tucked' ? slivers(S.m, pal, 640, 3) : '';
+  el.innerHTML = appWin(pal, 0, 0, 640, 34, true) + layer;
+}
+function miniPreset(el, m) {
+  const pal = PAL[theme];
+  el.innerHTML = `<div class="desk" style="background:${pal.desk}"></div>${appWin(pal, 6, 42, 600, 40)}
+    <div class="barpos" style="left:${6 + m.inset}px;top:${42 - m.height}px">${barHTML(m, 600, 3, pal)}</div>`;
+}
+
+// ---- Shared pieces of markup ----
+const pct = k => { const [lo, hi] = k === 'hold' ? [0, 2000] : LIM[k]; return ((get(k) - lo) / (hi - lo) * 100) + '%'; };
+const unit = k => k === 'hold' ? ' ms' : ' px';
+const slider = k => { const [lo, hi] = k === 'hold' ? [0, 2000] : LIM[k]; return `<input type="range" data-k="${k}" min="${lo}" max="${hi}" step="${k === 'hold' ? 25 : 1}" aria-label="${NAME[k]}">`; };
+const valText = k => `<span class="val" data-v="${k}"></span>`;
+const sw = (b, label) => `<button class="sw" role="switch" data-b="${b}" aria-label="${label}"></button>`;
+const holdTest = () => `<button class="hold" data-hold><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" class="trk2"/><circle cx="12" cy="12" r="9" class="arc"/></svg><span>Press and hold to test</span></button>`;
+const MODES = [['always', 'Always on'], ['tucked', 'Tucked'], ['hidden', 'Hidden']];
+const maxSeg = () => `<span class="seg">${MODES.map(([k, l]) => `<button data-max="${k}">${l}</button>`).join('')}</span>`;
+const maxPicker = () => `<div class="mp">${MODES.map(([k, l]) => `<button class="mpc" data-max="${k}"><div class="mini" data-mini="${k}"></div><span>${l}</span></button>`).join('')}</div>`;
+const previewBar = () => `<div class="pvbar"><b>Preview</b><span class="muted">actual size · hover the top of the maximized window</span><span class="sp"></span>
+  <span class="step">Tabs <button data-n="-1">−</button><b data-ntabs></b><button data-n="1">+</button></span>
+  <span class="seg"><button data-theme="light">Light</button><button data-theme="dark">Dark</button></span></div>`;
+const title = sub => `<div class="wt"><img src="${GICON}" alt=""><b>Grouply settings</b><span class="sp"></span><span class="muted">${sub}</span></div>`;
+
+// ---- Variant A: a Windows 11 settings page with a preview on top ----
+const rowSlider = (k, desc) => `<div class="row"><div class="lbl"><b>${NAME[k]}</b>${desc ? `<small>${desc}</small>` : ''}</div>${slider(k)}${valText(k)}</div>`;
+const VA = () => `<div class="win">${title('Changes apply as you make them')}
+  <div class="pv">${previewBar()}<div class="scene" data-scene="normal"></div><div class="scene" data-scene="max"></div></div>
+  <h3>Tabs</h3>
+  ${rowSlider('height', 'Including the space above the tabs.')}
+  <div class="row"><div class="lbl"><b>Tab width</b><small>Tabs share the bar, never narrower or wider than this.</small></div>
+    <div class="dual"><div class="trk"></div><div class="fil" data-dualfill></div>${slider('tab_min')}${slider('tab_max')}</div><span class="val" data-v="tabw"></span></div>
+  ${rowSlider('corner', 'Radius of the top corners.')}
+  ${rowSlider('spacing', '')}
+  <h3>Fine-tuning</h3>
+  <div class="grid2">${['top_gap', 'inset', 'padding', 'icon', 'close', 'caption_reserve'].map(k => `<div class="row"><div class="lbl"><b>${NAME[k]}</b></div>${slider(k)}${valText(k)}</div>`).join('')}</div>
+  <h3>Behaviour</h3>
+  <div class="row"><div class="lbl"><b>Hold to group</b><small>How long a dragged window must rest on a tab bar to group.</small></div>${holdTest()}${slider('hold')}${valText('hold')}</div>
+  <div class="row"><div class="lbl"><b>Maximized windows</b><small>What the tabs do on maximized and top-snapped windows.</small></div>${maxSeg()}</div>
+  <div class="row"><div class="lbl"><b>Middle-click closes a tab</b></div>${sw('middle', 'Middle-click closes a tab')}</div>
+  <div class="row"><div class="lbl"><b>Win + &#96; switches tabs</b><small>Add Shift to go back.</small></div>${sw('cycle', 'Win + &#96; switches tabs')}</div>
+  <div class="row"><div class="lbl"><b>Start with Windows</b></div>${sw('autostart', 'Start with Windows')}</div>
+  <div class="foot"><button class="btn" data-act="reset">Reset to defaults</button><button class="btn" data-act="file">Open settings file</button></div>
+</div>`;
+
+// ---- Variant B: drag handles on the tabs themselves ----
+const Z = 1.5;
+const HANDLES = [['height', 'ns'], ['tab_max', 'ew'], ['corner', 'nwse'], ['spacing', 'ew'], ['inset', 'ew']];
+const VB = () => `<div class="win">${title('Drag the tabs into shape')}
+  <p class="hint">Drag the green handles to resize the tabs. The big view is zoomed to 150%; the strip under it is actual size.</p>
+  <div class="stage" id="stage"><div class="stage-inner" id="stageInner"></div>
+    ${HANDLES.map(([k, c]) => `<div class="hd ${c}" data-handle="${k}"><span class="hl">${NAME[k]} <b data-hv="${k}"></b></span></div>`).join('')}</div>
+  <div class="chips">${HANDLES.map(([k]) => `<span class="chip">${NAME[k]}<b data-v="${k}"></b></span>`).join('')}</div>
+  <div class="scene" data-scene="normal" style="margin-top:8px"></div>
+  <div class="others">${['top_gap', 'tab_min', 'padding', 'icon', 'close', 'caption_reserve'].map(k => `<div><span>${NAME[k]}</span><span class="step"><button data-inc="${k}" data-d="-1">−</button><b data-v="${k}"></b><button data-inc="${k}" data-d="1">+</button></span></div>`).join('')}</div>
+  <div class="cols" style="margin-top:16px">
+    <div><h3 style="margin-top:0">Maximized windows</h3>${maxPicker()}</div>
+    <div><h3 style="margin-top:0">Behaviour</h3><div class="checks">
+      <label>${sw('middle', 'Middle-click closes a tab')} Middle-click closes a tab</label>
+      <label>${sw('cycle', 'Win + &#96; switches tabs')} Win + &#96; switches tabs</label>
+      <label>${sw('autostart', 'Start with Windows')} Start with Windows</label>
+      <div style="display:flex;align-items:center;gap:8px">${holdTest()}${valText('hold')}</div>
+      <div style="display:flex;align-items:center;gap:8px"><span class="muted" style="font-size:12px">Hold</span>${slider('hold')}</div></div></div>
+  </div>
+  <div class="foot"><button class="btn" data-act="reset">Reset to defaults</button><span class="sp"></span><span class="seg"><button data-theme="light">Light</button><button data-theme="dark">Dark</button></span></div>
+</div>`;
+function renderStage() {
+  const st = document.getElementById('stage'), inner = document.getElementById('stageInner');
+  if (!st || !st.offsetParent) return;
+  const m = S.m, pal = PAL[theme], W = st.clientWidth / Z, H = 150, WL = 16, WT = 110, WW = 1000, n = Math.max(nTabs, 2);
+  const bx = WL + m.inset, by = WT - m.height;
+  inner.style.width = W + 'px'; inner.style.height = H + 'px'; inner.style.transform = `scale(${Z})`;
+  inner.innerHTML = `<div class="desk" style="background:${pal.desk}"></div>${appWin(pal, WL, WT, WW, 60)}
+    <div class="barpos" style="left:${bx}px;top:${by}px">${barHTML(m, WW - 2 * m.inset, n, pal)}</div>`;
+  const g = layoutTabs(WW - 2 * m.inset, n, m)[0], k = 0.29 * m.corner / 2;
+  const at = { height: [bx + (g.l + g.r) / 2, by + m.top_gap], tab_max: [bx + g.r, by + (m.top_gap + m.height) / 2], corner: [bx + g.l + k, by + m.top_gap + k],
+    spacing: [bx + g.r + m.spacing / 2, by + m.top_gap - 9], inset: [bx, WT - 3] };
+  st.querySelectorAll('[data-handle]').forEach(h => { const [x, y] = at[h.dataset.handle]; h.style.left = x * Z + 'px'; h.style.top = y * Z + 'px'; });
+}
+// Pointer deltas (screen px) to new values, from the value at drag start.
+const DRAG = { height: (v, dx, dy) => v - dy / Z, tab_max: (v, dx) => v + dx / Z, corner: (v, dx, dy) => v + (dx + dy) / Z, spacing: (v, dx) => v + dx / Z, inset: (v, dx) => v + dx / Z };
+
+// ---- Variant C: presets plus dials ----
+const PRESETS = [
+  ['Compact', { height: 26, top_gap: 2, tab_min: 64, tab_max: 180, spacing: 2, padding: 6, icon: 14, close: 14, corner: 6 }],
+  ['Standard', { ...DEF.m }],
+  ['Roomy', { height: 40, top_gap: 6, tab_min: 96, tab_max: 260, spacing: 4, padding: 12, icon: 18, close: 18, corner: 10 }],
+  ['Rounded', { height: 32, top_gap: 4, tab_min: 72, tab_max: 220, spacing: 6, padding: 10, icon: 16, close: 16, corner: 24 }],
+  ['Flat', { height: 30, top_gap: 0, tab_min: 72, tab_max: 220, spacing: 0, padding: 8, icon: 16, close: 16, corner: 0 }]];
+const KNOBS = [['height', 'Height'], ['tab_max', 'Widest tab'], ['corner', 'Roundness'], ['spacing', 'Gap'], ['hold', 'Hold to group']];
+const KR = { hold: [0, 2000] };
+const VC = () => `<div class="win">${title('Pick a look, then fine-tune')}
+  <h3 style="margin-top:0">Start from a preset</h3>
+  <div class="presets">${PRESETS.map(([n]) => `<button class="pc" data-preset="${n}"><div class="mini" data-pmini="${n}"></div><span>${n}</span></button>`).join('')}</div>
+  <div class="pv" style="margin-top:12px">${previewBar()}<div class="scene" data-scene="normal"></div><div class="scene" data-scene="max"></div></div>
+  <h3>Fine-tune <span class="muted" style="font-weight:400">drag a dial up or down, scroll it, or double-click to reset</span></h3>
+  <div class="knobs">${KNOBS.map(([k, l]) => `<div class="knob"><div class="kw" data-knob="${k}"><svg viewBox="0 0 64 64"><circle class="kb" cx="32" cy="32" r="21"/><path class="kt"/><path class="kv"/><circle class="kd" r="2.6"/></svg><b data-v="${k}"></b></div><span>${l}</span><small>${k === 'hold' ? 'ms' : 'px'}</small></div>`).join('')}</div>
+  <div style="margin-top:6px;text-align:right">${holdTest()}</div>
+  <h3>Behaviour</h3>
+  <div class="tiles">
+    <button class="tile" data-b="middle" role="switch"><b>Middle-click closes</b><i data-st="middle"></i></button>
+    <button class="tile" data-b="cycle" role="switch"><b>Win + &#96; switches tabs</b><i data-st="cycle"></i></button>
+    <button class="tile" data-b="autostart" role="switch"><b>Start with Windows</b><i data-st="autostart"></i></button></div>
+  <h3>Maximized windows</h3>${maxPicker()}
+  <div class="foot"><button class="btn" data-act="reset">Reset to defaults</button></div>
+</div>`;
+const A0 = 135, SWEEP = 270, KC = 32, KRAD = 26;
+const pt = a => [KC + KRAD * Math.cos(a * Math.PI / 180), KC + KRAD * Math.sin(a * Math.PI / 180)];
+function arcPath(p) { const a1 = A0 + SWEEP * Math.max(p, 0.0001), [x0, y0] = pt(A0), [x1, y1] = pt(a1); return `M${x0} ${y0}A${KRAD} ${KRAD} 0 ${a1 - A0 > 180 ? 1 : 0} 1 ${x1} ${y1}`; }
+function knobRange(k) { return KR[k] || LIM[k]; }
+
+// ---- Rendering ----
+const VARIANTS = [['A', 'Settings page', VA], ['B', 'Drag the tabs', VB], ['C', 'Presets and dials', VC]];
+document.getElementById('variants').innerHTML = VARIANTS.map(([k, , f]) => `<div data-variant="${k}">${f()}</div>`).join('');
+const $$ = s => document.querySelectorAll(s);
+const visible = el => el.offsetParent !== null;
+function tomlLines() {
+  const L = [], d = DEF, m = S.m;
+  const c = t => L.push(['c', t]), kv = (k, v, dv) => L.push([v === dv ? '' : 'chg', `${k} = ${v}`]);
+  c('# Grouply settings. Edit with any text editor, then choose'); c('# "Reload settings" from the tray menu.'); L.push(['', '']);
+  c('# Milliseconds a window must rest on a drop zone before it groups.');
+  kv('hold_to_group_ms', S.hold, d.hold); kv('middle_click_closes', S.middle, d.middle); kv('cycle_hotkeys', S.cycle, d.cycle);
+  c('# Tabs on maximized windows: "always", "tucked" or "hidden" (replaces hide_when_maximized).');
+  kv('maximized', `"${S.maximized}"`, `"${d.maximized}"`);
+  L.push(['', '']); c('# Bar dimensions in pixels at 96 DPI; scaled on other displays.'); L.push(['', '[bar]']);
+  for (const k of Object.keys(DEF.m)) kv(k, m[k], d.m[k]);
+  return L;
+}
+function render() {
+  const pal = PAL[theme];
+  $$('input[data-k]').forEach(i => { const v = get(i.dataset.k); if (+i.value !== v) i.value = v; i.style.setProperty('--p', i.closest('.dual') ? '0%' : pct(i.dataset.k)); });
+  $$('[data-dualfill]').forEach(f => { const [lo, hi] = [32, 800]; f.style.left = (S.m.tab_min - lo) / (hi - lo) * 100 + '%'; f.style.right = (100 - (S.m.tab_max - lo) / (hi - lo) * 100) + '%'; });
+  $$('.dual input').forEach(i => { i.min = 32; i.max = 800; });
+  $$('[data-v]').forEach(e => { const k = e.dataset.v; e.textContent = k === 'tabw' ? `${S.m.tab_min}–${S.m.tab_max} px` : e.closest('.kw') || e.closest('.chip') || e.closest('.step') ? get(k) : get(k) + unit(k); });
+  $$('[data-hv]').forEach(e => e.textContent = get(e.dataset.hv));
+  $$('[data-b]').forEach(e => e.setAttribute('aria-checked', S[e.dataset.b]));
+  $$('[data-st]').forEach(e => e.textContent = S[e.dataset.st] ? 'On' : 'Off');
+  $$('[data-max]').forEach(e => e.setAttribute('aria-pressed', S.maximized === e.dataset.max));
+  $$('[data-theme]').forEach(e => e.setAttribute('aria-pressed', theme === e.dataset.theme));
+  $$('[data-ntabs]').forEach(e => e.textContent = nTabs);
+  $$('[data-scene]').forEach(e => { if (visible(e)) (e.dataset.scene === 'max' ? sceneMax : sceneNormal)(e); });
+  $$('[data-mini]').forEach(e => { if (visible(e)) miniMax(e, e.dataset.mini); });
+  $$('[data-pmini]').forEach(e => { if (visible(e)) miniPreset(e, { ...DEF.m, ...PRESETS.find(p => p[0] === e.dataset.pmini)[1] }); });
+  $$('[data-preset]').forEach(e => { const p = PRESETS.find(p => p[0] === e.dataset.preset)[1]; e.setAttribute('aria-pressed', Object.keys(p).every(k => S.m[k] === p[k])); });
+  $$('[data-knob]').forEach(e => {
+    const k = e.dataset.knob, [lo, hi] = knobRange(k), p = (Math.min(get(k), hi) - lo) / (hi - lo);
+    e.querySelector('.kt').setAttribute('d', arcPath(1)); e.querySelector('.kv').setAttribute('d', arcPath(p));
+    const [x, y] = pt(A0 + SWEEP * p), d = e.querySelector('.kd'); d.setAttribute('cx', KC + (x - KC) * 0.62); d.setAttribute('cy', KC + (y - KC) * 0.62);
+  });
+  renderStage();
+  document.getElementById('tomlText').innerHTML = tomlLines().map(([c, t]) => `<span class="${c}">${t.replace(/</g, '&lt;')}</span>`).join('\n');
+}
+
+// ---- Interaction ----
+document.addEventListener('input', e => { const k = e.target.dataset.k; if (k) setVal(k, +e.target.value); });
+document.addEventListener('click', e => {
+  const t = e.target.closest('button'); if (!t) return;
+  const d = t.dataset;
+  if (d.b) { S[d.b] = !S[d.b]; render(); }
+  else if (d.max) { S.maximized = d.max; render(); }
+  else if (d.theme) { theme = d.theme; render(); }
+  else if (d.n) { nTabs = Math.min(Math.max(nTabs + +d.n, 1), 8); render(); }
+  else if (d.inc) setVal(d.inc, get(d.inc) + +d.d);
+  else if (d.preset) { Object.assign(S.m, PRESETS.find(p => p[0] === d.preset)[1]); render(); }
+  else if (d.act === 'reset') { Object.assign(S, JSON.parse(JSON.stringify(DEF))); render(); }
+  else if (d.act === 'file') { const p = document.getElementById('toml'); p.classList.remove('flash'); void p.offsetWidth; p.classList.add('flash'); p.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }
+  else if (d.go) step(+d.go);
+});
+// Drag handles (variant B) and dials (variant C).
+let drag = null;
+document.addEventListener('pointerdown', e => {
+  const h = e.target.closest('[data-handle],[data-knob]'); if (!h) return;
+  const k = h.dataset.handle || h.dataset.knob;
+  drag = { el: h, k, knob: !!h.dataset.knob, x: e.clientX, y: e.clientY, v: get(k) };
+  h.setPointerCapture(e.pointerId); h.classList.add('drag'); e.preventDefault();
+});
+document.addEventListener('pointermove', e => {
+  if (!drag) return;
+  const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+  if (drag.knob) { const [lo, hi] = knobRange(drag.k); setVal(drag.k, drag.v - dy * (hi - lo) / 160); }
+  else setVal(drag.k, DRAG[drag.k](drag.v, dx, dy));
+});
+document.addEventListener('pointerup', () => { if (drag) { drag.el.classList.remove('drag'); drag = null; } });
+document.addEventListener('wheel', e => {
+  const kn = e.target.closest('[data-knob]'); if (!kn) return;
+  e.preventDefault(); const k = kn.dataset.knob, [lo, hi] = knobRange(k), stepv = k === 'hold' ? 25 : Math.max(1, Math.round((hi - lo) / 100));
+  setVal(k, get(k) + (e.deltaY < 0 ? stepv : -stepv));
+}, { passive: false });
+document.addEventListener('dblclick', e => { const kn = e.target.closest('[data-knob]'); if (kn) setVal(kn.dataset.knob, kn.dataset.knob === 'hold' ? DEF.hold : DEF.m[kn.dataset.knob]); });
+// Hold-to-group test: the ring fills over hold_to_group_ms.
+document.addEventListener('pointerdown', e => {
+  const b = e.target.closest('[data-hold]'); if (!b) return;
+  e.preventDefault(); b.setPointerCapture(e.pointerId);
+  const arc = b.querySelector('.arc'), label = b.querySelector('span'), t0 = performance.now(); let done = false, raf;
+  b.classList.remove('ok', 'early'); label.textContent = 'Holding…';
+  const tick = now => { const p = S.hold ? (now - t0) / S.hold : 1; arc.style.strokeDashoffset = 56.55 * (1 - Math.min(p, 1));
+    if (p >= 1) { done = true; b.classList.add('ok'); label.textContent = 'Grouped, let go'; } else raf = requestAnimationFrame(tick); };
+  raf = requestAnimationFrame(tick);
+  const up = () => { cancelAnimationFrame(raf); b.removeEventListener('pointerup', up); b.removeEventListener('pointercancel', up);
+    if (!done) { b.classList.add('early'); label.textContent = 'Too soon, not grouped'; }
+    setTimeout(() => { b.classList.remove('ok', 'early'); arc.style.strokeDashoffset = 56.55; label.textContent = 'Press and hold to test'; }, 1400); };
+  b.addEventListener('pointerup', up); b.addEventListener('pointercancel', up);
+});
+
+// ---- Prototype switcher ----
+let cur = (new URLSearchParams(location.search).get('variant') || 'A').toUpperCase();
+if (!VARIANTS.some(v => v[0] === cur)) cur = 'A';
+function show(k) {
+  cur = k;
+  $$('[data-variant]').forEach(v => v.hidden = v.dataset.variant !== k);
+  const v = VARIANTS.find(v => v[0] === k);
+  document.getElementById('vlabel').innerHTML = `<b>${v[0]}</b> · ${v[1]}`;
+  try { const u = new URL(location.href); u.searchParams.set('variant', k); history.replaceState(null, '', u); } catch (_) {}
+  render();
+}
+function step(d) { const i = VARIANTS.findIndex(v => v[0] === cur); show(VARIANTS[(i + d + VARIANTS.length) % VARIANTS.length][0]); }
+document.addEventListener('keydown', e => {
+  const a = document.activeElement;
+  if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.isContentEditable)) return;
+  if (e.key === 'ArrowLeft') step(-1); else if (e.key === 'ArrowRight') step(1);
+});
+// Reserve the tallest variant's height so switching doesn't resize the page.
+const host = document.getElementById('variants');
+let tallest = 0;
+for (const [k] of VARIANTS) { show(k); tallest = Math.max(tallest, host.offsetHeight); }
+host.style.minHeight = tallest + 'px';
+if (window.PROTOTYPE_SHOW_ALL) { $$('[data-variant]').forEach(v => v.hidden = false); render(); } else show(cur);
+</script>
+</body></html>
