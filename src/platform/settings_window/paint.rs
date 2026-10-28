@@ -31,6 +31,17 @@ fn dial_center(r: Rect, dpi: u32) -> (f32, f32) {
     ((r.left + r.right) as f32 / 2.0, (r.top + s(38)) as f32)
 }
 
+/// A toggle card's two lines: the title across the whole card, then the state with the switch at
+/// its right end. Three cards share the row, so the title can't also make room for the switch.
+fn toggle_lines(r: Rect, dpi: u32) -> (Rect, Rect) {
+    let s = |v: i32| v * dpi as i32 / 96;
+    let (left, right) = (r.left + s(12), r.right - s(12));
+    (
+        Rect::new(left, r.top + s(9), right, r.top + s(29)),
+        Rect::new(left, r.top + s(29), right, r.bottom - s(8)),
+    )
+}
+
 unsafe fn text(hdc: HDC, s: &str, r: Rect, font: HFONT, color: u32, flags: DRAW_TEXT_FORMAT) {
     unsafe {
         SelectObject(hdc, font.into());
@@ -332,11 +343,12 @@ fn draw_shape(c: &Canvas, st: &State, control: Control, r: Rect) {
             };
             c.card(r, radius, card_fill(st, control), border, width);
             if let Control::Toggle(toggle) = control {
-                // A small switch on the right.
+                // A small switch at the right of the state line.
                 let on = st.toggle(toggle);
+                let (_, line2) = toggle_lines(r, st.dpi);
                 let (w, h) = (s(36), s(18));
-                let x = r.right as f32 - s(14) - w;
-                let y = (r.top + r.bottom) as f32 / 2.0 - h / 2.0;
+                let x = line2.right as f32 - w;
+                let y = (line2.top + line2.bottom) as f32 / 2.0 - h / 2.0;
                 let pill = Rect::new(x as i32, y as i32, (x + w) as i32, (y + h) as i32);
                 if on {
                     c.fill_round(pill, h / 2.0, t.accent);
@@ -535,14 +547,8 @@ unsafe fn draw_content(mem: HDC, st: &State, control: Control, r: Rect) {
                     Toggle::Autostart => "Start with Windows",
                 };
                 let on = st.toggle(toggle);
-                let line1 = Rect::new(r.left + s(12), r.top + s(9), r.right - s(56), r.top + s(29));
+                let (line1, line2) = toggle_lines(r, st.dpi);
                 text(mem, title, line1, f.strong, t.text, DT_LEFT | DT_VCENTER);
-                let line2 = Rect::new(
-                    r.left + s(12),
-                    r.top + s(29),
-                    r.right - s(56),
-                    r.bottom - s(8),
-                );
                 let (state, color) = if on {
                     ("On", t.accent)
                 } else {

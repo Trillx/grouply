@@ -309,41 +309,19 @@ pub fn parse(text: &str) -> Loaded {
         };
         let key = key.trim().to_ascii_lowercase();
         let value = value.trim();
-        let known = match (section.as_str(), key.as_str()) {
-            ("", "middle_click_closes") => set_bool(&mut settings.middle_click_closes, value),
-            ("", "cycle_hotkeys") => set_bool(&mut settings.cycle_hotkeys, value),
-            ("", "maximized") => set_maximized(&mut settings.maximized, value),
-            // Older files: true hid the bar, false kept it on.
-            ("", "hide_when_maximized") => {
-                let mut hide = false;
-                let known = set_bool(&mut hide, value);
-                if known {
-                    settings.maximized = if hide {
-                        MaximizedBar::Hidden
-                    } else {
-                        MaximizedBar::Always
-                    };
-                }
-                known
-            }
-            (section, key) if let Some(field) = Field::find(section, key) => {
-                match value.parse::<i64>() {
-                    Ok(parsed) => {
-                        field.store(&mut settings, parsed);
-                        true
-                    }
-                    Err(_) => false,
-                }
-            }
-            _ => {
-                let where_ = if section.is_empty() {
-                    String::new()
-                } else {
-                    format!(" in [{section}]")
-                };
-                warnings.push(format!("line {number}: unknown key `{key}`{where_}"));
-                true
-            }
+        let mut applied = apply(&mut settings, &section, &key, value);
+        // A top-level key added to the end of the file lands under [bar]; it still applies.
+        if applied.is_none() && section == "bar" {
+            applied = apply(&mut settings, "", &key, value);
+        }
+        let Some(known) = applied else {
+            let where_ = if section.is_empty() {
+                String::new()
+            } else {
+                format!(" in [{section}]")
+            };
+            warnings.push(format!("line {number}: unknown key `{key}`{where_}"));
+            continue;
         };
         if !known {
             let expected = if key == "maximized" {
@@ -360,6 +338,40 @@ pub fn parse(text: &str) -> Loaded {
         settings.metrics.tab_max = settings.metrics.tab_min;
     }
     Loaded { settings, warnings }
+}
+
+/// Stores one `key = value` line. `None` means `section` has no such key; `Some(false)` means the
+/// key is known but the value isn't valid for it.
+fn apply(settings: &mut Settings, section: &str, key: &str, value: &str) -> Option<bool> {
+    let known = match (section, key) {
+        ("", "middle_click_closes") => set_bool(&mut settings.middle_click_closes, value),
+        ("", "cycle_hotkeys") => set_bool(&mut settings.cycle_hotkeys, value),
+        ("", "maximized") => set_maximized(&mut settings.maximized, value),
+        // Older files: true hid the bar, false kept it on.
+        ("", "hide_when_maximized") => {
+            let mut hide = false;
+            let known = set_bool(&mut hide, value);
+            if known {
+                settings.maximized = if hide {
+                    MaximizedBar::Hidden
+                } else {
+                    MaximizedBar::Always
+                };
+            }
+            known
+        }
+        (section, key) if let Some(field) = Field::find(section, key) => {
+            match value.parse::<i64>() {
+                Ok(parsed) => {
+                    field.store(settings, parsed);
+                    true
+                }
+                Err(_) => false,
+            }
+        }
+        _ => return None,
+    };
+    Some(known)
 }
 
 /// Stores a mode name, quoted or not. Returns false when it isn't one.
@@ -491,6 +503,20 @@ mod tests {
         let shown = parse("hide_when_maximized = false\n");
         assert_eq!(shown.settings.maximized, MaximizedBar::Always);
         assert!(shown.warnings.is_empty(), "{:?}", shown.warnings);
+    }
+
+    #[test]
+    fn top_level_keys_added_after_the_bar_section_still_apply() {
+        let mut text = Settings::default().to_toml();
+        text.push_str("hide_when_maximized = true\nhold_to_group_ms = 500\n");
+        let loaded = parse(&text);
+        assert_eq!(loaded.settings.maximized, MaximizedBar::Hidden);
+        assert_eq!(loaded.settings.hold_to_group_ms, 500);
+        assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+
+        let elsewhere = parse("[future]\ncycle_hotkeys = false\n");
+        assert!(elsewhere.settings.cycle_hotkeys);
+        assert_eq!(elsewhere.warnings.len(), 2, "{:?}", elsewhere.warnings);
     }
 
     #[test]
