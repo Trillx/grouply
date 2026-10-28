@@ -142,7 +142,9 @@ pub fn run() -> windows::core::Result<()> {
     APP.with_borrow_mut(|app| *app = Some(App::new(controller, instance, settings)));
     with_app(|app| app.adopt(&launch.groups));
     let tooltip = UPDATER.with_borrow(Updater::tooltip);
-    TRAY.with_borrow_mut(|tray| *tray = Some(Tray::add(controller, WM_APP_TRAY, &tooltip)));
+    TRAY.with_borrow_mut(|tray| {
+        *tray = Some(Tray::add(controller, instance, WM_APP_TRAY, &tooltip))
+    });
     notify_warnings(&loaded.warnings);
     if UPDATER.with_borrow(Updater::can_check) {
         let _ = unsafe { SetTimer(Some(controller), TIMER_UPDATE, FIRST_CHECK_MS, None) };
