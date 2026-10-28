@@ -34,7 +34,7 @@ use updater::{Outcome, WM_APP_UPDATE};
 
 use crate::command::TabCommand;
 use crate::handoff::Launch;
-use crate::settings::{self, Settings};
+use crate::settings::{self, MaximizedBar, Settings};
 use crate::update::{self, BuildInfo, Job, Updater};
 
 const CONTROLLER_CLASS: PCWSTR = w!("GrouplyController");
@@ -138,7 +138,7 @@ pub fn run() -> windows::core::Result<()> {
     let loaded = load_settings();
     let settings = loaded.settings.clone();
     register_hotkeys(controller, settings.cycle_hotkeys);
-    configure_hover_timer(controller, settings.hide_when_maximized);
+    configure_hover_timer(controller, settings.maximized != MaximizedBar::Always);
     APP.with_borrow_mut(|app| *app = Some(App::new(controller, instance, settings)));
     with_app(|app| app.adopt(&launch.groups));
     let tooltip = UPDATER.with_borrow(Updater::tooltip);
@@ -246,7 +246,10 @@ fn reload_settings(controller: HWND) {
         None => settings::Loaded::default(),
     };
     register_hotkeys(controller, loaded.settings.cycle_hotkeys);
-    configure_hover_timer(controller, loaded.settings.hide_when_maximized);
+    configure_hover_timer(
+        controller,
+        loaded.settings.maximized != MaximizedBar::Always,
+    );
     with_app(|app| app.apply_settings(loaded.settings));
     notify_warnings(&loaded.warnings);
 }

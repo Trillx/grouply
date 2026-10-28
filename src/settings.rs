@@ -21,11 +21,38 @@ pub struct Settings {
     pub middle_click_closes: bool,
     /// Win+` / Win+Shift+` cycle tabs in the foreground group.
     pub cycle_hotkeys: bool,
-    /// On maximized (and top-snapped) windows, hide the bar until the pointer touches the top
-    /// edge of the screen. Off by default: the bar then always overlays the caption.
-    pub hide_when_maximized: bool,
+    /// What the bar does on maximized (and top-snapped) windows.
+    pub maximized: MaximizedBar,
     /// Bar dimensions at 96 DPI.
     pub metrics: BarMetrics,
+}
+
+/// The bar's behaviour on maximized and top-snapped windows. With no room above them, the bar can
+/// only cover the top of the window, where the window keeps its own title, tabs or menus.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MaximizedBar {
+    /// The full bar always covers the top of the window.
+    Always,
+    /// A thin sliver of each tab stays at the top edge; touching the edge shows the full bar.
+    Tucked,
+    /// Nothing shows until the pointer touches the top edge.
+    Hidden,
+}
+
+impl MaximizedBar {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Always => "always",
+            Self::Tucked => "tucked",
+            Self::Hidden => "hidden",
+        }
+    }
+
+    fn from_name(name: &str) -> Option<Self> {
+        [Self::Always, Self::Tucked, Self::Hidden]
+            .into_iter()
+            .find(|mode| mode.name().eq_ignore_ascii_case(name))
+    }
 }
 
 impl Default for Settings {
@@ -34,7 +61,7 @@ impl Default for Settings {
             hold_to_group_ms: 350,
             middle_click_closes: true,
             cycle_hotkeys: true,
-            hide_when_maximized: false,
+            maximized: MaximizedBar::Tucked,
             metrics: BarMetrics::default(),
         }
     }
@@ -107,9 +134,13 @@ impl Settings {
         let _ = writeln!(out, "middle_click_closes = {}", self.middle_click_closes);
         let _ = writeln!(out, "cycle_hotkeys = {}", self.cycle_hotkeys);
         out.push_str(
-            "# Hide the tab bar on maximized windows until the pointer touches the top edge.\n",
+            "# Tabs on maximized windows: \"always\" shows the whole bar, \"tucked\" leaves\n",
         );
-        let _ = writeln!(out, "hide_when_maximized = {}", self.hide_when_maximized);
+        out.push_str(
+            "# a sliver of each tab at the top edge, \"hidden\" shows nothing. Touching the\n",
+        );
+        out.push_str("# top edge shows the whole bar.\n");
+        let _ = writeln!(out, "maximized = \"{}\"", self.maximized.name());
         out.push_str("\n# Bar dimensions in pixels at 96 DPI; scaled on other displays.\n");
         out.push_str("[bar]\n");
         let m = &self.metrics;
@@ -161,7 +192,20 @@ pub fn parse(text: &str) -> Loaded {
             ("", "hold_to_group_ms") => set_u64(&mut settings.hold_to_group_ms, value, 0, 5_000),
             ("", "middle_click_closes") => set_bool(&mut settings.middle_click_closes, value),
             ("", "cycle_hotkeys") => set_bool(&mut settings.cycle_hotkeys, value),
-            ("", "hide_when_maximized") => set_bool(&mut settings.hide_when_maximized, value),
+            ("", "maximized") => set_maximized(&mut settings.maximized, value),
+            // Older files: true hid the bar, false kept it on.
+            ("", "hide_when_maximized") => {
+                let mut hide = false;
+                let known = set_bool(&mut hide, value);
+                if known {
+                    settings.maximized = if hide {
+                        MaximizedBar::Hidden
+                    } else {
+                        MaximizedBar::Always
+                    };
+                }
+                known
+            }
             ("bar", "height") => set_i32(&mut settings.metrics.height, value, 16, 96),
             ("bar", "top_gap") => set_i32(&mut settings.metrics.top_gap, value, 0, 32),
             ("bar", "inset") => set_i32(&mut settings.metrics.inset, value, 0, 64),
@@ -186,9 +230,12 @@ pub fn parse(text: &str) -> Loaded {
             }
         };
         if !known {
-            warnings.push(format!(
-                "line {number}: `{key}` is not a number or true/false"
-            ));
+            let expected = if key == "maximized" {
+                "\"always\", \"tucked\" or \"hidden\""
+            } else {
+                "a number or true/false"
+            };
+            warnings.push(format!("line {number}: `{key}` is not {expected}"));
         }
     }
 
@@ -220,6 +267,18 @@ fn set_u64(target: &mut u64, value: &str, min: u64, max: u64) -> bool {
     }
 }
 
+/// Stores a mode name, quoted or not. Returns false when it isn't one.
+fn set_maximized(target: &mut MaximizedBar, value: &str) -> bool {
+    let name = value.trim_matches(|c| c == '"' || c == '\'');
+    match MaximizedBar::from_name(name) {
+        Some(mode) => {
+            *target = mode;
+            true
+        }
+        None => false,
+    }
+}
+
 fn set_bool(target: &mut bool, value: &str) -> bool {
     match value.to_ascii_lowercase().as_str() {
         "true" | "yes" | "on" | "1" => {
@@ -243,7 +302,7 @@ mod tests {
             hold_to_group_ms: 666,
             middle_click_closes: false,
             cycle_hotkeys: false,
-            hide_when_maximized: true,
+            maximized: MaximizedBar::Hidden,
             metrics: BarMetrics {
                 height: 40,
                 top_gap: 6,
@@ -308,12 +367,35 @@ mod tests {
 
     #[test]
     fn yes_no_and_numbers_are_accepted_for_flags() {
-        let loaded =
-            parse("middle_click_closes = no\ncycle_hotkeys = 0\nhide_when_maximized = YES\n");
+        let loaded = parse("middle_click_closes = no\ncycle_hotkeys = 0\n");
         assert!(!loaded.settings.middle_click_closes);
         assert!(!loaded.settings.cycle_hotkeys);
-        assert!(loaded.settings.hide_when_maximized);
         assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+    }
+
+    #[test]
+    fn maximized_modes_parse_quoted_or_bare_in_any_case() {
+        for (text, mode) in [
+            ("maximized = \"always\"", MaximizedBar::Always),
+            ("maximized = 'Hidden'", MaximizedBar::Hidden),
+            ("maximized = TUCKED", MaximizedBar::Tucked),
+        ] {
+            let loaded = parse(text);
+            assert_eq!(loaded.settings.maximized, mode, "{text}");
+            assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+        }
+        let loaded = parse("maximized = \"folded\"");
+        assert_eq!(loaded.settings.maximized, MaximizedBar::Tucked);
+        assert_eq!(loaded.warnings.len(), 1, "{:?}", loaded.warnings);
+    }
+
+    #[test]
+    fn the_old_hide_when_maximized_key_keeps_its_meaning() {
+        let hidden = parse("hide_when_maximized = YES\n");
+        assert_eq!(hidden.settings.maximized, MaximizedBar::Hidden);
+        let shown = parse("hide_when_maximized = false\n");
+        assert_eq!(shown.settings.maximized, MaximizedBar::Always);
+        assert!(shown.warnings.is_empty(), "{:?}", shown.warnings);
     }
 
     /// A fresh, legal-on-Windows directory name for the two filesystem tests.

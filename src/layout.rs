@@ -127,6 +127,18 @@ pub fn bar_overlays(frame: Rect, work_area: Rect, m: &BarMetrics) -> bool {
     frame.top - m.height < work_area.top
 }
 
+/// Height of a tucked bar: a sliver of each tab at the top edge, 5 px at the default size.
+pub fn tuck_height(m: &BarMetrics) -> i32 {
+    (m.height / 6).max(3)
+}
+
+/// Screen rectangle for a tucked bar: the top edge of where [`bar_rect`] would put the bar, so
+/// each sliver lines up with its tab.
+pub fn tucked_rect(frame: Rect, work_area: Rect, m: &BarMetrics) -> Rect {
+    let full = bar_rect(frame, work_area, m);
+    Rect::new(full.left, full.top, full.right, full.top + tuck_height(m))
+}
+
 /// The strip along the top of the work area that reveals an auto-hidden bar.
 pub fn reveal_band(work_area: Rect, m: &BarMetrics) -> Rect {
     Rect::new(
@@ -350,5 +362,21 @@ mod tests {
         assert!(in_reveal_band(WORK, &m, 500, m.height - 1));
         assert!(!in_reveal_band(WORK, &m, 500, m.height));
         assert!(!in_reveal_band(WORK, &m, -1, 1), "left of the monitor");
+    }
+
+    #[test]
+    fn a_tucked_bar_is_the_top_edge_of_the_overlay() {
+        let m = BarMetrics::default();
+        let maximized = Rect::new(0, 0, 1920, 1040);
+        let full = bar_rect(maximized, WORK, &m);
+        let tucked = tucked_rect(maximized, WORK, &m);
+        assert_eq!(tucked, Rect::new(full.left, 0, full.right, 5));
+        assert!(in_reveal_band(WORK, &m, 500, tucked.bottom - 1));
+        assert_eq!(tuck_height(&m.scaled(192)), 10);
+        let tiny = BarMetrics {
+            height: 16,
+            ..BarMetrics::default()
+        };
+        assert_eq!(tuck_height(&tiny), 3);
     }
 }
